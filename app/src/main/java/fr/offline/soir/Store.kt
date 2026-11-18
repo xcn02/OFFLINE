@@ -4,6 +4,9 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
+import java.time.LocalTime
+
+fun eveningDate(): LocalDate = LocalDate.now().let { if (LocalTime.now().isBefore(LocalTime.of(4, 0))) it.minusDays(1) else it }
 
 data class Task(val id: Long, val name: String, val minutes: Int, val enabled: Boolean = true, val optional: Boolean = false)
 data class Config(
@@ -11,7 +14,11 @@ data class Config(
     val days: Set<Int> = (1..7).toSet(), val enabled: Boolean = true,
     val gray: Boolean = true, val dnd: Boolean = false, val plane: Boolean = false,
     val reminder: Boolean = true, val morning: Boolean = true, val quota: Int = 15,
-    val packages: String = "com.twitter.android,com.reddit.frontpage",
+    val packages: String = "com.google.android.youtube,com.instagram.android,com.twitter.android,com.reddit.frontpage",
+    val reminderLevel: String = "persistent", val repeatMinutes: Int = 10,
+    val unlockPopup: Boolean = true, val popupOverlay: Boolean = false,
+    val reminderTitle: String = "Il est temps de décrocher",
+    val reminderMessage: String = "Éteins le PC et commence ta routine du soir.",
     val transition: String = "hybrid", val planeConfirm: Boolean = false, val stepSound: Boolean = false,
     val tasks: List<Task> = listOf(
         Task(2, "Étirements", 5), Task(3, "Préparer le lendemain", 3),
@@ -38,7 +45,14 @@ class Store(private val ctx: Context) {
             j.optString("wake", defaults.wake), days, j.optBoolean("enabled", true),
             j.optBoolean("gray", true), j.optBoolean("dnd", false), j.optBoolean("plane", false),
             j.optBoolean("reminder", true), j.optBoolean("morning", true),
-            j.optInt("quota", 15).coerceIn(1, 120), j.optString("packages", defaults.packages),
+            j.optInt("quota", 15).coerceIn(1, 120),
+            j.optString("packages", defaults.packages).let { previous ->
+                if (previous == "com.twitter.android,com.reddit.frontpage") defaults.packages else previous
+            },
+            j.optString("reminderLevel", "persistent"), j.optInt("repeatMinutes", 10).coerceIn(5, 30),
+            j.optBoolean("unlockPopup", true), j.optBoolean("popupOverlay", false),
+            j.optString("reminderTitle", "Il est temps de décrocher"),
+            j.optString("reminderMessage", "Éteins le PC et commence ta routine du soir."),
             j.optString("transition", "hybrid").takeIf { it in setOf("hybrid", "auto", "manual") } ?: "hybrid",
             j.optBoolean("planeConfirm", false), j.optBoolean("stepSound", false), tasks)
     } catch (_: Exception) { Config() }
@@ -50,6 +64,9 @@ class Store(private val ctx: Context) {
             put("gray", c.gray); put("dnd", c.dnd); put("plane", c.plane)
             put("reminder", c.reminder); put("morning", c.morning)
             put("quota", c.quota); put("packages", c.packages)
+            put("reminderLevel", c.reminderLevel); put("repeatMinutes", c.repeatMinutes)
+            put("unlockPopup", c.unlockPopup); put("popupOverlay", c.popupOverlay)
+            put("reminderTitle", c.reminderTitle); put("reminderMessage", c.reminderMessage)
             put("transition", c.transition); put("planeConfirm", c.planeConfirm); put("stepSound", c.stepSound)
             put("tasks", JSONArray().apply { c.tasks.forEach { t ->
                 put(JSONObject().apply {put("id", t.id); put("name", t.name); put("minutes", t.minutes); put("enabled", t.enabled); put("optional", t.optional) })
@@ -66,7 +83,7 @@ class Store(private val ctx: Context) {
         }
     } catch (_: Exception) { emptyList() }
 
-    fun updateNight(date: String = LocalDate.now().toString(), transform: (Night) -> Night) {
+    fun updateNight(date: String = eveningDate().toString(), transform: (Night) -> Night) {
         val all = nights().toMutableList()
         val i = all.indexOfFirst { it.date == date }
         val old = if (i < 0) Night(date) else all[i]
@@ -91,6 +108,9 @@ class Store(private val ctx: Context) {
         }
         p.edit().putString("active_session", json.toString()).apply()
     }
+    fun isFinished(date: String): Boolean = nights().any { it.date == date && it.sleptAt.isNotBlank() } || getBoolean("ignored_$date")
+    fun isStarted(date: String): Boolean = nights().any { it.date == date && it.cutAt.isNotBlank() }
+    fun ensureNight(date: String) { updateNight(date) { it } }
     fun getText(key: String) = p.getString(key, "") ?: ""
     fun setText(key: String, value: String) = p.edit().putString(key, value).apply()
     fun getBoolean(key: String) = p.getBoolean(key, false)

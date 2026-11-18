@@ -25,7 +25,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 object Scheduler {
-    private val kinds = listOf("start", "bed", "wake", "quota")
+    private val kinds = listOf("start", "bed", "wake", "quota", "repeat")
     private fun pending(ctx: Context, kind: String): PendingIntent = PendingIntent.getBroadcast(
         ctx, kinds.indexOf(kind) + 100, Intent(ctx, AlarmReceiver::class.java).setAction("fr.offline.$kind"),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -38,7 +38,7 @@ object Scheduler {
     private fun next(c: Config, kind: String): Long? {
         if (!c.enabled || c.days.isEmpty()) return null
         val now = LocalDateTime.now()
-        val at = when (kind) { "start", "quota" -> c.start; "bed" -> c.bed; else -> c.wake }
+        val at = when (kind) { "start", "quota", "repeat" -> c.start; "bed" -> c.bed; else -> c.wake }
         val time = try { LocalTime.parse(at) } catch (_: Exception) { return null }
         for (offset in 0..8) {
             val d = LocalDate.now().plusDays(offset.toLong())
@@ -62,7 +62,7 @@ object Scheduler {
         cancel(ctx)
         if (!c.enabled) return
         val alarm = ctx.getSystemService(AlarmManager::class.java)
-        kinds.forEach { kind ->
+        kinds.filter { it != "repeat" }.forEach { kind ->
             if ((kind == "quota" && c.packages.isBlank()) || (kind == "wake" && !c.morning && !c.dnd)) return@forEach
             val time = next(c, kind) ?: return@forEach
             // Inexact alarms avoid special 'exact alarm' permission and can be delayed by Android.
@@ -70,6 +70,15 @@ object Scheduler {
         }
     }
 
+    fun scheduleRepeat(ctx: Context, minutes: Int) {
+        val alarm = ctx.getSystemService(AlarmManager::class.java)
+        alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + minutes * 60_000L, pending(ctx, "repeat"))
+    }
+
+    fun stopRepeat(ctx: Context) {
+        ctx.getSystemService(AlarmManager::class.java).cancel(pending(ctx, "repeat"))
+        ctx.getSystemService(NotificationManager::class.java).cancel(101)
+    }
     fun scheduleQuotaCheck(ctx: Context) {
         val alarm = ctx.getSystemService(AlarmManager::class.java)
         alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, System.currentTimeMillis()+15*60*1000, pending(ctx,"quota"))
@@ -77,16 +86,52 @@ object Scheduler {
 }
 
 object Alerts {
-    private const val CHANNEL = "offline_evening"
-    fun notify(ctx: Context, id: Int, title: String, body: String) {
+    private const val CHANNEL = "offline_evening_v3"
+    private const val MORNING_CHANNEL = "offline_morning"
+    fun notify(ctx: Context, id: Int, title: String, body: String, persistent: Boolean = false) {
         val nm = ctx.getSystemService(NotificationManager::class.java)
-        nm.createNotificationChannel(NotificationChannel(CHANNEL, "Routine du soir", NotificationManager.IMPORTANCE_DEFAULT))
+        nm.createNotificationChannel(NotificationChannel(CHANNEL, "Rappels OFFLINE", NotificationManager.IMPORTANCE_HIGH))
+        nm.createNotificationChannel(NotificationChannel(MORNING_CHANNEL, "Priorités du matin", NotificationManager.IMPORTANCE_DEFAULT))
         if (Build.VERSION.SDK_INT >= 33 && ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         val content = PendingIntent.getActivity(ctx, 0, Intent(ctx, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        val n: Notification = NotificationCompat.Builder(ctx, CHANNEL)
+        val builder = NotificationCompat.Builder(ctx, if (id == 103) MORNING_CHANNEL else CHANNEL)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-            .setContentTitle(title).setContentText(body).setAutoCancel(true).setContentIntent(content).build()
-        NotificationManagerCompat.from(ctx).notify(id, n)
+            .setContentTitle(title).setContentText(body).setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setPriority(if (id == 103) NotificationCompat.PRIORITY_DEFAULT else NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(!persistent).setOngoing(persistent).setContentIntent(content)
+        if (id == 101) {
+            val start = PendingIntent.getActivity(ctx, 151, Intent(ctx, MainActivity::class.java).putExtra("start_routine", true), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            val postpone = PendingIntent.getBroadcast(ctx, 152, Intent(ctx, ReminderActionReceiver::class.java).setAction("postpone"), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            val ignore = PendingIntent.getBroadcast(ctx, 153, Intent(ctx, ReminderActionReceiver::class.java).setAction("ignore"), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            builder.addAction(0, "Je coupe", start).addAction(0, "Encore 10 min", postpone).addAction(0, "Ignorer ce soir", ignore)
+        }
+        NotificationManagerCompat.from(ctx).notify(id, builder.build())
+    }
+    fun eveningReminder(ctx: Context) {
+        val store = Store(ctx)
+        val c = store.load()
+        val date = eveningDate().toString()
+        if (!c.enabled || !c.reminder || store.isFinished(date) || store.isStarted(date) || store.getText("snooze_$date").toLongOrNull()?.let { it > System.currentTimeMillis() } == true) return
+        notify(ctx, 101, c.reminderTitle, c.reminderMessage, persistent = c.reminderLevel != "normal")
+        if (c.reminderLevel != "normal") Scheduler.scheduleRepeat(ctx, c.repeatMinutes)
+    }
+}
+
+class ReminderActionReceiver : BroadcastReceiver() {
+    override fun onReceive(ctx: Context, intent: Intent) {
+        val store = Store(ctx)
+        val date = eveningDate().toString()
+        when (intent.action) {
+            "ignore" -> {
+                store.setBoolean("ignored_$date", true)
+                Scheduler.stopRepeat(ctx)
+            }
+            "postpone" -> {
+                store.setText("snooze_$date", (System.currentTimeMillis() + 10*60_000L).toString())
+                ctx.getSystemService(NotificationManager::class.java).cancel(101)
+                Scheduler.scheduleRepeat(ctx, 10)
+            }
+        }
     }
 }
 
@@ -100,10 +145,10 @@ class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
         val c = Store(ctx).load()
         if (!c.enabled) return
-        if (intent.action != "fr.offline.quota") Scheduler.schedule(ctx, c)
+        if (intent.action != "fr.offline.quota" && intent.action != "fr.offline.repeat") Scheduler.schedule(ctx, c)
         when(intent.action?.removePrefix("fr.offline.")) {
             "start" -> {
-                if (c.reminder) Alerts.notify(ctx, 101, "OFFLINE · Fin de soirée", "Arrête les écrans et appuie sur « Je coupe » pour lancer ta routine.")
+                Alerts.eveningReminder(ctx)
                 if (c.dnd) {
                     val nm = ctx.getSystemService(NotificationManager::class.java)
                     if (nm.isNotificationPolicyAccessGranted) {
@@ -114,9 +159,14 @@ class AlarmReceiver : BroadcastReceiver() {
                 }
                 Scheduler.scheduleQuotaCheck(ctx)
             }
+            "repeat" -> { Alerts.eveningReminder(ctx) }
             "bed" -> {
-                val night = Store(ctx).nights().firstOrNull { it.date == LocalDate.now().toString() }
-                if (night?.sleptAt.isNullOrBlank()) Alerts.notify(ctx, 102, "OFFLINE · Heure de dormir", "Termine ta routine puis appuie sur « Je vais dormir ».")
+                val store = Store(ctx)
+                val date = eveningDate().toString()
+                if (!store.isFinished(date)) {
+                    Alerts.notify(ctx, 102, "OFFLINE · Heure de dormir", "Termine ta routine puis appuie sur « Je vais dormir ».")
+                    if (!store.isStarted(date)) Alerts.eveningReminder(ctx)
+                }
             }
             "wake" -> {
                 val store = Store(ctx)
@@ -127,7 +177,7 @@ class AlarmReceiver : BroadcastReceiver() {
                 }
                 if (c.morning) {
                     val priorities = store.getText("tomorrow_${LocalDate.now().minusDays(1)}").trim()
-                    if (priorities.isNotBlank()) Alerts.notify(ctx, 103, "OFFLINE · Priorités du jour", priorities.take(120))
+                    if (priorities.isNotBlank()) Alerts.notify(ctx, 103, "OFFLINE · Priorités du jour", priorities.take(300))
                 }
             }
             "quota" -> {

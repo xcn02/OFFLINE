@@ -8,6 +8,8 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.net.Uri
+import android.content.Context
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -45,7 +47,7 @@ class MainActivity : ComponentActivity() {
             requestNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         Scheduler.schedule(this)
-        setContent { OfflineApp() }
+        setContent { OfflineApp(intent.getBooleanExtra("start_routine", false)) }
     }
 }
 
@@ -54,7 +56,7 @@ private fun nowText() = LocalTime.now().format(fmt)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun OfflineApp() {
+fun OfflineApp(startImmediately: Boolean = false) {
     val ctx = LocalContext.current
     val store = remember { Store(ctx) }
     var cfg by remember { mutableStateOf(store.load()) }
@@ -63,9 +65,23 @@ fun OfflineApp() {
     var editor by remember { mutableStateOf<Task?>(null) }
     var adding by remember { mutableStateOf(false) }
     var reason by remember { mutableStateOf("") }
+    var expandedHistory by remember { mutableStateOf("") }
+    var editingHistory by remember { mutableStateOf("") }
+    var doneVersion by remember { mutableIntStateOf(0) }
+    val today = eveningDate().toString()
+    var tomorrow by remember(today) { mutableStateOf(store.getText("tomorrow_$today")) }
+    var journal by remember(today) { mutableStateOf(store.getText("journal_$today")) }
+    fun updateNote(type: String, value: String, date: String = today) {
+        store.setText("${type}_$date", value)
+        store.ensureNight(date)
+        if (date == today) { if (type == "tomorrow") tomorrow = value else journal = value }
+        nights = store.nights()
+    }
+    fun done(taskId: Long): Boolean { @Suppress("UNUSED_VARIABLE") val v=doneVersion; return store.getBoolean("done_${today}_$taskId") }
+    fun setDone(taskId: Long, checked: Boolean) { store.setBoolean("done_${today}_$taskId", checked);doneVersion++ }
     var cut by remember { mutableStateOf(false) }
     var slept by remember { mutableStateOf(false) }
-    var session by remember { mutableStateOf(store.session()) }
+    var session by remember { mutableStateOf(store.session()?.takeIf { it.date == today }) }
     var clock by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var confirmPlane by remember { mutableStateOf(false) }
     var grayInfo by remember { mutableStateOf(false) }
@@ -74,11 +90,24 @@ fun OfflineApp() {
     val activeTask = activeTasks.getOrNull(activeIndex)
     val elapsedMs = if (session == null) 0L else ((if (session!!.pausedMs > 0) session!!.pausedMs else clock) - session!!.startedMs).coerceAtLeast(0L)
     fun setSession(new: Store.Session?) { session = new; store.saveSession(new) }
+    fun startRoutine() {
+        if (!store.isStarted(today)) store.updateNight(today) { it.copy(cutAt = nowText()) }
+        cut = true; slept = false; nights = store.nights()
+        Scheduler.stopRepeat(ctx)
+        val first = cfg.tasks.firstOrNull { it.enabled && !done(it.id) }
+        if (first != null && (session == null || session?.date != today)) {
+            session = Store.Session(today, first.id, System.currentTimeMillis())
+            store.saveSession(session)
+        }
+        page = 1
+    }
+    LaunchedEffect(startImmediately) { if (startImmediately) startRoutine() }
     fun finishNight() {
         store.updateNight { it.copy(sleptAt=nowText()) }
         slept = true
         nights = store.nights()
         setSession(null)
+        Scheduler.stopRepeat(ctx)
         page = 0
         if (cfg.plane) {
             if (cfg.planeConfirm) confirmPlane = true else {
@@ -91,11 +120,11 @@ fun OfflineApp() {
         val current = session ?: return
         val position = activeTasks.indexOfFirst { it.id == current.taskId }
         if (position < 0) { setSession(null); return }
-        store.setBoolean("done_${current.date}_${current.taskId}", true)
+        setDone(current.taskId, true)
         if (cfg.stepSound) runCatching {
             ToneGenerator(AudioManager.STREAM_NOTIFICATION, 25).apply { startTone(ToneGenerator.TONE_PROP_BEEP, 100); release() }
         }
-        val next = activeTasks.getOrNull(position + 1)
+        val next = activeTasks.drop(position + 1).firstOrNull { !done(it.id) }
         if (next != null) setSession(Store.Session(current.date, next.id, System.currentTimeMillis()))
         else setSession(current.copy(completed=true, pausedMs=System.currentTimeMillis()))
     }
@@ -111,13 +140,22 @@ fun OfflineApp() {
             if (autoAdvance && clock - state.startedMs >= task.minutes * 60_000L) advance()
         }
     }
-    val today = LocalDate.now().toString()
-    LaunchedEffect(page) {
+    LaunchedEffect(page,doneVersion) {
         nights = store.nights()
-        cut = nights.any { it.date == today && it.cutAt.isNotBlank() }
-        slept = nights.any { it.date == today && it.sleptAt.isNotBlank() }
+        cut = store.isStarted(today)
+        slept = store.isFinished(today)
     }
-    fun save(c: Config) { cfg = c; store.save(c) }
+    fun save(c: Config) {
+        cfg = c; store.save(c)
+        val service = Intent(ctx, UnlockOverlayService::class.java)
+        if (c.unlockPopup && c.popupOverlay && Settings.canDrawOverlays(ctx)) {
+            runCatching { androidx.core.content.ContextCompat.startForegroundService(ctx, service) }
+        } else ctx.stopService(service)
+    }
+    LaunchedEffect(cfg.unlockPopup, cfg.popupOverlay) {
+        if (cfg.unlockPopup && cfg.popupOverlay && Settings.canDrawOverlays(ctx))
+            runCatching { androidx.core.content.ContextCompat.startForegroundService(ctx, Intent(ctx, UnlockOverlayService::class.java)) }
+    }
     val colors = darkColorScheme(primary = androidx.compose.ui.graphics.Color(0xFFB2D6FF), surface = androidx.compose.ui.graphics.Color(0xFF111B2A), background = androidx.compose.ui.graphics.Color(0xFF0B1320))
     MaterialTheme(colorScheme = colors) {
         Scaffold(topBar = {
@@ -140,10 +178,14 @@ fun OfflineApp() {
                                 Column(Modifier.padding(20.dp), verticalArrangement=Arrangement.spacedBy(12.dp)) {
                                     Text(if(slept) "Soirée terminée ✓" else if(cut) "Routine en cours" else "Prêt à décrocher ?",style=MaterialTheme.typography.headlineSmall)
                                     Text(if(slept) "Bonne nuit. OFFLINE ne te relancera plus pour cette soirée." else if(cut) "Passe à tes activités, puis termine avec « Je vais dormir »." else "Éteins le PC et commence la routine du soir.")
-                                    if (!cut && !slept) Button(onClick={
-                                        store.updateNight { it.copy(cutAt=nowText()) }; cut=true; nights=store.nights(); page=1
-                                        if (session == null && activeTasks.isNotEmpty()) setSession(Store.Session(today, activeTasks.first().id, System.currentTimeMillis()))
-                                    },modifier=Modifier.fillMaxWidth()) { Icon(Icons.Default.PowerSettingsNew,null); Spacer(Modifier.width(8.dp)); Text("Je coupe") }
+                                    if (!cut && !slept) {
+                                        Button(onClick={startRoutine()},modifier=Modifier.fillMaxWidth()) { Icon(Icons.Default.PowerSettingsNew,null); Spacer(Modifier.width(8.dp)); Text("Je coupe") }
+                                        OutlinedButton(onClick={
+                                            store.setText("snooze_$today", (System.currentTimeMillis()+10*60_000L).toString())
+                                            Scheduler.scheduleRepeat(ctx,10)
+                                            Toast.makeText(ctx,"Dernière activité : rappel dans 10 minutes",Toast.LENGTH_SHORT).show()
+                                        },modifier=Modifier.fillMaxWidth()) { Text("Je termine dans 10 minutes") }
+                                    }
                                     if (cut && !slept) Button(onClick={
                                         finishNight()
                                     },modifier=Modifier.fillMaxWidth()) { Icon(Icons.Default.Bedtime,null); Spacer(Modifier.width(8.dp)); Text("Je vais dormir") }
@@ -155,6 +197,7 @@ fun OfflineApp() {
                             val priorities = store.getText("tomorrow_$yesterday")
                             if (priorities.isNotBlank()) SettingCard("Priorités notées hier") { Text(priorities) }
                         }
+                        item { NotesPanel(tomorrow, journal, onTomorrow={updateNote("tomorrow", it)}, onJournal={updateNote("journal", it)}, initiallyExpanded=false) }
                         item { Heading("Routine prévue", "${cfg.tasks.filter{it.enabled}.sumOf{it.minutes}} minutes d'activités") }
                         items(cfg.tasks.filter{it.enabled}) { t -> ListItem(headlineContent={Text(t.name)}, supportingContent={Text("${t.minutes} min${if(t.optional) " · facultatif" else ""}")}, leadingContent={Icon(Icons.Default.CheckCircleOutline,null)}) }
                         item { Text("Les réglages système protégés (niveaux de gris, mode avion) restent manuels sur Android standard.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -162,7 +205,7 @@ fun OfflineApp() {
                     1 -> {
                         item { Heading("Routine guidée", "Progression discrète et activités personnalisables") }
                         if (cut && !slept && session == null && activeTasks.isNotEmpty()) item {
-                            Button(onClick={setSession(Store.Session(today,activeTasks.first().id,System.currentTimeMillis()))}, modifier=Modifier.fillMaxWidth()) { Text("Démarrer la routine") }
+                            Button(onClick={setSession(Store.Session(today,activeTasks.firstOrNull{!done(it.id)}?.id ?: activeTasks.first().id,System.currentTimeMillis()))}, modifier=Modifier.fillMaxWidth()) { Text("Démarrer la routine") }
                         }
                         if (cut && !slept && activeTask != null && session?.completed == false) item {
                             ElevatedCard(Modifier.fillMaxWidth()) {
@@ -172,6 +215,12 @@ fun OfflineApp() {
                                     val fraction = (elapsedMs.toFloat() / (activeTask.minutes*60_000f)).coerceIn(0f,1f)
                                     LinearProgressIndicator(progress={fraction}, modifier=Modifier.fillMaxWidth().height(6.dp))
                                     Text("${activeTask.minutes} min prévues · ${ (fraction*100).toInt() } %",style=MaterialTheme.typography.bodySmall)
+                                    if (activeTask.id == 4L) {
+                                        OutlinedTextField(value=journal,onValueChange={updateNote("journal", it)},label={Text("Journal rapide")},modifier=Modifier.fillMaxWidth(),minLines=3)
+                                    }
+                                    if (activeTask.id == 3L) {
+                                        OutlinedTextField(value=tomorrow,onValueChange={updateNote("tomorrow", it)},label={Text("Priorités de demain")},modifier=Modifier.fillMaxWidth(),minLines=3)
+                                    }
                                     Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                                         OutlinedButton(onClick={
                                             val s=session ?: return@OutlinedButton
@@ -191,17 +240,18 @@ fun OfflineApp() {
                         }
                         item { Text("Tu peux terminer une étape plus tôt ou la mettre en pause. Les minutes sont indicatives, pas une obligation.",style=MaterialTheme.typography.bodySmall) }
                         items(cfg.tasks.filter { it.enabled }, key={"check_"+it.id}) { task ->
-                            var done by remember(task.id,today) { mutableStateOf(store.getBoolean("done_${today}_${task.id}")) }
-                            ListItem(headlineContent={Text(task.name)},supportingContent={Text("${task.minutes} min")},leadingContent={
-                                Checkbox(checked=done,onCheckedChange={done=it;store.setBoolean("done_${today}_${task.id}",it)})
+                            val checked = done(task.id)
+                            ListItem(headlineContent={Text(task.name)},supportingContent={Text("${task.minutes} min${if (checked) " · Terminée" else ""}")},leadingContent={
+                                Checkbox(checked=checked,onCheckedChange={checkedNow ->
+                                    setDone(task.id, checkedNow)
+                                    val current = session
+                                    if (checkedNow && current?.taskId == task.id && !current.completed) advance()
+                                    else if (!checkedNow && cut && !slept)
+                                        setSession(Store.Session(today,task.id,System.currentTimeMillis()))
+                                })
                             })
                         }
-                        item { SettingCard("Notes du soir") {
-                            var tomorrow by remember { mutableStateOf(store.getText("tomorrow_$today")) }
-                            var journal by remember { mutableStateOf(store.getText("journal_$today")) }
-                            OutlinedTextField(value=tomorrow,onValueChange={tomorrow=it;store.setText("tomorrow_$today",it)},label={Text("Priorités de demain")},modifier=Modifier.fillMaxWidth(),minLines=2)
-                            OutlinedTextField(value=journal,onValueChange={journal=it;store.setText("journal_$today",it)},label={Text("Journal rapide")},modifier=Modifier.fillMaxWidth(),minLines=2)
-                        } }
+                        item { NotesPanel(tomorrow, journal, onTomorrow={updateNote("tomorrow", it)}, onJournal={updateNote("journal", it)}, initiallyExpanded=false) }
                         item { Heading("Gérer les activités", "Ajout, modification, réorganisation") }
                         items(cfg.tasks, key={it.id}) { task ->
                             ElevatedCard(Modifier.fillMaxWidth()) {
@@ -219,14 +269,30 @@ fun OfflineApp() {
                     }
                     2 -> {
                         item { Heading("Historique", "Les 90 dernières soirées enregistrées localement") }
-                        item { Text("Appuie sur une soirée pour renseigner la cause d'un coucher tardif.", style=MaterialTheme.typography.bodySmall) }
+                        item { Text("Ouvre une soirée pour consulter son journal et les priorités prévues.", style=MaterialTheme.typography.bodySmall) }
                         if(nights.isEmpty()) item { Text("Aucune soirée enregistrée pour le moment.") }
-                        items(nights) { night ->
-                            ElevatedCard(onClick={reason=night.date},modifier=Modifier.fillMaxWidth()) {
-                                Column(Modifier.padding(16.dp)) {
-                                    Text(night.date,fontWeight=FontWeight.Bold)
-                                    Text("Je coupe : ${night.cutAt.ifBlank{"—"}}  ·  Je dors : ${night.sleptAt.ifBlank{"—"}}")
-                                    if(night.reason.isNotBlank())Text("Dérapage : ${night.reason}",style=MaterialTheme.typography.bodySmall)
+                        items(nights, key={it.date}) { night ->
+                            ElevatedCard(Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(9.dp)) {
+                                    Row(Modifier.fillMaxWidth().clickable{expandedHistory=if(expandedHistory==night.date) "" else night.date},verticalAlignment=Alignment.CenterVertically) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(night.date,fontWeight=FontWeight.Bold)
+                                            Text("Je coupe : ${night.cutAt.ifBlank{"—"}} · Je dors : ${night.sleptAt.ifBlank{"—"}}",style=MaterialTheme.typography.bodySmall)
+                                        }
+                                        Icon(if(expandedHistory==night.date) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,null)
+                                    }
+                                    if (expandedHistory == night.date) {
+                                        HorizontalDivider()
+                                        Text("Journal rapide",fontWeight=FontWeight.SemiBold)
+                                        Text(store.getText("journal_${night.date}").ifBlank{"Aucune note"})
+                                        Text("Priorités du lendemain",fontWeight=FontWeight.SemiBold)
+                                        Text(store.getText("tomorrow_${night.date}").ifBlank{"Aucune priorité"})
+                                        if(night.reason.isNotBlank()) Text("Dérapage : ${night.reason}")
+                                        Row {
+                                            TextButton(onClick={editingHistory=night.date}) { Text("Modifier les notes") }
+                                            TextButton(onClick={reason=night.date}) { Text("Cause du retard") }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -279,7 +345,42 @@ fun OfflineApp() {
                             OutlinedTextField(value=pkgs,onValueChange={pkgs=it},label={Text("Identifiants Android des applications")}, supportingText={Text("Séparés par une virgule ; ex. com.twitter.android")},modifier=Modifier.fillMaxWidth())
                             TextButton(onClick={save(cfg.copy(packages=pkgs))}){Text("Enregistrer les applications")}
                             TextButton(onClick={ctx.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))}){Text(if (usagePermitted(ctx)) "Accès aux statistiques autorisé ✓" else "Autoriser l'accès aux statistiques d'utilisation")}
+                            Text("YouTube et Instagram font partie de la liste initiale. Pour une configuration déjà existante, ajoute-les manuellement si nécessaire.",style=MaterialTheme.typography.bodySmall)
                             Text("Avertissement uniquement : aucun blocage d'application.",style=MaterialTheme.typography.bodySmall)
+                        } }
+                        item { SettingCard("Rappels du soir") {
+                            Text("Intensité des rappels",fontWeight=FontWeight.SemiBold)
+                            listOf("normal" to "Normal · une notification", "persistent" to "Insistant · relances", "strict" to "Renforcé · relances et alerte visuelle").forEach { (value,label) ->
+                                Row(Modifier.fillMaxWidth().clickable{save(cfg.copy(reminderLevel=value))},verticalAlignment=Alignment.CenterVertically) {
+                                    RadioButton(selected=cfg.reminderLevel==value,onClick={save(cfg.copy(reminderLevel=value))})
+                                    Text(label,style=MaterialTheme.typography.bodyMedium)
+                                }
+                            }
+                            if(cfg.reminderLevel != "normal") {
+                                Text("Relance toutes les ${cfg.repeatMinutes} minutes")
+                                listOf(5,10,15).forEach { mins ->
+                                    Row(verticalAlignment=Alignment.CenterVertically) {
+                                        RadioButton(selected=cfg.repeatMinutes==mins,onClick={save(cfg.copy(repeatMinutes=mins))})
+                                        Text("$mins minutes",modifier=Modifier.clickable{save(cfg.copy(repeatMinutes=mins))})
+                                    }
+                                }
+                            }
+                            var title by remember(cfg.reminderTitle) { mutableStateOf(cfg.reminderTitle) }
+                            var message by remember(cfg.reminderMessage) { mutableStateOf(cfg.reminderMessage) }
+                            OutlinedTextField(value=title,onValueChange={title=it},label={Text("Titre du rappel")},modifier=Modifier.fillMaxWidth())
+                            OutlinedTextField(value=message,onValueChange={message=it},label={Text("Message du rappel")},modifier=Modifier.fillMaxWidth(),minLines=2)
+                            TextButton(onClick={save(cfg.copy(reminderTitle=title.ifBlank{"OFFLINE"},reminderMessage=message))}){Text("Enregistrer les messages")}
+                            SwitchSetting("Pop-up au déverrouillage",cfg.unlockPopup){v->save(cfg.copy(unlockPopup=v, popupOverlay=if(v) cfg.popupOverlay else false))}
+                            if(cfg.unlockPopup) {
+                                SwitchSetting("Fenêtre par-dessus les applications",cfg.popupOverlay){ v ->
+                                    if (v && !Settings.canDrawOverlays(ctx)) {
+                                        runCatching { ctx.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,Uri.parse("package:${ctx.packageName}"))) }
+                                        Toast.makeText(ctx,"Autorise la superposition puis reviens activer l'option.",Toast.LENGTH_LONG).show()
+                                    } else save(cfg.copy(popupOverlay=v))
+                                }
+                                Text("Une autorisation Android est nécessaire. OFFLINE utilise une notification de service visible pour écouter les déverrouillages ; le système peut limiter ce fonctionnement.",style=MaterialTheme.typography.bodySmall)
+                            }
+                            Text("Après « Je coupe » ou « Ignorer ce soir », les rappels cessent. Le mode renforcé utilise le pop-up seulement si tu l'as autorisé.",style=MaterialTheme.typography.bodySmall)
                         } }
                         item { SettingCard("Notifications et données") {
                             SwitchSetting("Rappel des priorités du lendemain",cfg.morning){save(cfg.copy(morning=it))}
@@ -310,6 +411,18 @@ fun OfflineApp() {
                 save(cfg.copy(tasks=if(adding)cfg.tasks+task else cfg.tasks.map{if(it.id==task.id)task else it}));adding=false;editor=null
             }){Text("Enregistrer")}},dismissButton={TextButton(onClick={adding=false;editor=null}){Text("Annuler")}})
         }
+        if(editingHistory.isNotBlank()) {
+            val date = editingHistory
+            var historicJournal by remember(date) { mutableStateOf(store.getText("journal_$date")) }
+            var historicTomorrow by remember(date) { mutableStateOf(store.getText("tomorrow_$date")) }
+            AlertDialog(onDismissRequest={editingHistory=""},title={Text("Notes du $date")},text={
+                Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(value=historicJournal,onValueChange={historicJournal=it},label={Text("Journal rapide")},modifier=Modifier.fillMaxWidth())
+                    OutlinedTextField(value=historicTomorrow,onValueChange={historicTomorrow=it},label={Text("Priorités du lendemain")},modifier=Modifier.fillMaxWidth())
+                }
+            },confirmButton={TextButton(onClick={updateNote("journal",historicJournal,date);updateNote("tomorrow",historicTomorrow,date);editingHistory=""}){Text("Enregistrer")}},
+            dismissButton={TextButton(onClick={editingHistory=""}){Text("Annuler")}})
+        }
         if(reason.isNotBlank()) {
             var selected by remember(reason) { mutableStateOf(nights.firstOrNull{it.date==reason}?.reason ?: "") }
             AlertDialog(onDismissRequest={reason=""},title={Text("Pourquoi ce coucher tardif ?")},text={
@@ -317,6 +430,25 @@ fun OfflineApp() {
                     Row(verticalAlignment=Alignment.CenterVertically,modifier=Modifier.clickable{selected=option}) { RadioButton(selected=selected==option,onClick={selected=option});Text(option) }
                 } }
             },confirmButton={TextButton(onClick={val date=reason;store.updateNight(date){it.copy(reason=selected)};nights=store.nights();reason=""}){Text("Enregistrer")}},dismissButton={TextButton(onClick={reason=""}){Text("Annuler")}})
+        }
+    }
+}
+
+@Composable private fun NotesPanel(tomorrow: String, journal: String, onTomorrow: (String)->Unit, onJournal: (String)->Unit, initiallyExpanded: Boolean = false) {
+    var expanded by remember { mutableStateOf(initiallyExpanded) }
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement=Arrangement.spacedBy(10.dp)) {
+            Row(Modifier.fillMaxWidth().clickable{expanded=!expanded},verticalAlignment=Alignment.CenterVertically) {
+                Text("Notes du soir",style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.Bold,modifier=Modifier.weight(1f))
+                Icon(if(expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,null)
+            }
+            if (!expanded) {
+                Text(if(tomorrow.isBlank() && journal.isBlank()) "Journal et priorités accessibles à tout moment" else "Notes enregistrées · appuie pour les modifier",style=MaterialTheme.typography.bodySmall)
+            } else {
+                OutlinedTextField(value=tomorrow,onValueChange=onTomorrow,label={Text("Priorités de demain")},modifier=Modifier.fillMaxWidth(),minLines=2)
+                OutlinedTextField(value=journal,onValueChange=onJournal,label={Text("Journal rapide")},modifier=Modifier.fillMaxWidth(),minLines=2)
+                Text("Enregistrement automatique · les notes restent dans l'historique",style=MaterialTheme.typography.bodySmall)
+            }
         }
     }
 }

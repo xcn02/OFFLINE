@@ -1,30 +1,20 @@
-# OFFLINE Android — V0.2.0
+# OFFLINE Android — V0.3.0
 
-Application personnelle Android Kotlin / Jetpack Compose pour la fin de soirée.
+Application Android Kotlin / Jetpack Compose pour décrocher des écrans le soir. Données stockées **localement** dans SharedPreferences et JSON. Aucune connexion ou compte nécessaire.
 
-## Nouveautés V0.2
+## Evolutions V0.3
 
-- Icône vectorielle OFFLINE (lune et étoiles).
-- Routine guidée : appuyer sur « Je coupe » démarre la première activité ; barre de progression discrète, boutons pause/reprise et suivant ; état sauvegardé localement.
-- Transitions paramétrables : hybride (automatique pour les activités chronométrées et manuel pour préparation/journal), automatique, manuel. Les activités de saisie sont actuellement reconnues par leurs IDs d'origine (3 et 4), y compris après renommage.
-- « Je vais dormir » termine la soirée, même si certaines activités ne sont pas faites. Si l'option est cochée, ouvre la page Android du mode avion pour activation manuelle ; confirmation facultative.
-- Journal et priorités enregistrés localement. Les priorités de la veille sont visibles dans l'accueil le lendemain et peuvent figurer dans un rappel matinal.
-- Option d'aide au noir et blanc : explication et raccourci vers les réglages d'accessibilité. Android standard ne permet pas d'activer arbitrairement les niveaux de gris depuis une application ordinaire.
-- Suppression du réglage redondant « rappel fin du PC » ; la notification de déconnexion reste.
-- Release optimisée par R8 et shrinkResources ; `abiFilters = arm64-v8a`. Les dépendances Compose sont pour l'essentiel du bytecode Java/Kotlin : l'ABI ARM64 seule ne garantit pas une grosse diminution de taille.
-- Version `0.2.0`, `versionCode = 2`, même `applicationId` : `fr.offline.soir`.
+- **Rappels** : message/titre personnalisables ; normal, insistant (par défaut), renforcé ; relance à 5/10/15 min ; notification prioritaire et persistante avec actions « Je coupe », « Encore 10 min », « Ignorer ce soir ». Le rappel cesse au lancement de la routine ou à la fin de la soirée.
+- **Dernière activité** : « Je termine dans 10 minutes » sur l'accueil, avec relance programmée. Les reports restent facultatifs.
+- **Pop-up lors d'un déverrouillage** : option dans Réglages > Rappels. Necessite l'autorisation Android « Afficher par-dessus les autres applis ». Un service au premier plan affiche une notification technique persistante et écoute le déverrouillage. Le système Android peut arrêter/limiter ce service : fonctionnement **non garanti** sur tous les modèles. Le pop-up est désactivé tant que l'utilisateur n'autorise pas explicitement la superposition. Après activation des permissions, activer l'option correspondante. Ne pas activer si la notification permanente gêne.
+- **Activités** : les cases à cocher sont désormais liées à la progression guidée. Cocher l'étape active fait avancer, décocher permet de revenir à cette étape. La sauvegarde persiste.
+- **Notes** : « Notes du soir » dépliables dans Accueil et Routine, modifiables même si la routine n'est pas commencée. Pendant les activités « Journal rapide » et « Préparer le lendemain », le champ approprié est dans la carte principale et synchronisé.
+- **Notes quotidiennes** : une fiche locale par soirée ; changement de soirée à 04h ; notes consultables/modifiables dans Historique, y compris si la routine n'a pas été commencée. Les priorités du matin reprennent le texte enregistré la veille à l'heure configurée.
+- **Surveillance** : YouTube et Instagram ajoutés aux applications surveillées par défaut, avec X et Reddit. Surveillance par quota, pas de blocage, requiert l'accès aux statistiques Android.
+- **Fonctions V0.2 conservées** : modification, ordre et durée des activités ; minuteur, progression, trois transitions ; historique, mode avion à la fin (« Je vais dormir ») **ouvre le panneau Android, sans activer directement le mode avion** ; ne pas déranger ; niveau de gris manuel.
 
 ## Compiler
 
-À la racine du projet, utiliser `gradle :app:assembleRelease --no-daemon --console=plain` avec Java 17, Gradle 8.9 et Android SDK 35 ; ou utiliser GitHub Actions inclus.
+Le workflow `.github/workflows/android.yml` compile un APK release ARM64 optimisé avec R8, puis le signe. Il utilise **une clé de test régénérée à chaque compilation** : pour installer un nouvel APK, il faudra désinstaller celui signé avec la clé précédente, perdant les données locales. Pour distribuer des mises à jour préservant les notes, configurez une clé de signature **permanente** avant vos premiers usages prolongés.
 
-Le workflow GitHub génère et signe un APK Release ARM64 avec **une clé de test temporaire nouvelle à chaque build**. Cela autorise l'installation locale, mais **empêche une mise à jour par-dessus une version précédente signée avec une clé différente** : désinstaller l'ancienne APK avant d'installer la nouvelle. **L'ancienne application et ses données seront supprimées lors de cette désinstallation.** Pour les mises à jour sans perte de données, configurer une clé de signature permanente via GitHub Secrets.
-
-## Limites actuelles
-
-- Compilation non testée dans cet environnement (pas de Gradle/SDK Android). Le workflow GitHub doit confirmer le build.
-- Le chronomètre utilise l'heure réelle et est sauvegardé ; il se met à jour tant que l'écran de l'app reste actif et retrouve le temps écoulé quand on rouvre l'application. Le passage automatique en arrière-plan n'est pas garanti sans service/notification persistante.
-- Le noir et blanc n'est pas automatiquement activé ; configurer le mode coucher natif Android pour cela. L'option dans OFFLINE est une aide à la configuration.
-- Le mode avion ne peut pas être activé par une app Android standard. OFFLINE ouvre la page système après l'appui sur « Je vais dormir ».
-- Le quota de distractions fournit un avertissement indicatif, pas un blocage.
-- Le suivi des notes reste dans OFFLINE, aucun envoi serveur.
+Pas de validation de compilation ou d'exécution effectuée dans cet environnement faute d'Android SDK. Vérifiez la compilation GitHub Actions puis le fonctionnement réel sur votre téléphone (Android 13 à 15, permissions de notifications, de superposition, veille et redémarrage).
