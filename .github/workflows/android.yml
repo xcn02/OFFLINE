@@ -13,7 +13,7 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Java 17
@@ -30,9 +30,43 @@ jobs:
       - name: Build Release APK
         run: gradle :app:assembleRelease --no-daemon --console=plain
 
-      - name: Upload Release APK
+      - name: Generate temporary signing key
+        run: |
+          keytool -genkeypair \
+            -keystore "$RUNNER_TEMP/offline.jks" \
+            -alias offline \
+            -keyalg RSA \
+            -keysize 3072 \
+            -validity 3650 \
+            -storepass android123 \
+            -keypass android123 \
+            -dname "CN=OFFLINE,O=Personal,C=FR"
+
+      - name: Sign APK
+        run: |
+          APK=$(find app/build/outputs/apk/release \
+            -name "*.apk" -type f | head -n 1)
+
+          BUILD_TOOLS=$(find "$ANDROID_HOME/build-tools" \
+            -maxdepth 1 -mindepth 1 -type d | sort -V | tail -n 1)
+
+          "$BUILD_TOOLS/zipalign" -f -p 4 \
+            "$APK" "$RUNNER_TEMP/offline-aligned.apk"
+
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks "$RUNNER_TEMP/offline.jks" \
+            --ks-key-alias offline \
+            --ks-pass pass:android123 \
+            --key-pass pass:android123 \
+            --out app/build/outputs/apk/release/OFFLINE-release.apk \
+            "$RUNNER_TEMP/offline-aligned.apk"
+
+          "$BUILD_TOOLS/apksigner" verify \
+            app/build/outputs/apk/release/OFFLINE-release.apk
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: OFFLINE-release
-          path: app/build/outputs/apk/release/*.apk
+          name: OFFLINE-installable
+          path: app/build/outputs/apk/release/OFFLINE-release.apk
           if-no-files-found: error
