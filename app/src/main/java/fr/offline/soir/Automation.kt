@@ -103,7 +103,7 @@ class AlarmReceiver : BroadcastReceiver() {
         if (intent.action != "fr.offline.quota") Scheduler.schedule(ctx, c)
         when(intent.action?.removePrefix("fr.offline.")) {
             "start" -> {
-                if (c.reminder) Alerts.notify(ctx, 101, "OFFLINE · Fin de soirée", "Termine le PC, puis appuie sur « Je coupe ».")
+                if (c.reminder) Alerts.notify(ctx, 101, "OFFLINE · Fin de soirée", "Arrête les écrans et appuie sur « Je coupe » pour lancer ta routine.")
                 if (c.dnd) {
                     val nm = ctx.getSystemService(NotificationManager::class.java)
                     if (nm.isNotificationPolicyAccessGranted) {
@@ -125,7 +125,10 @@ class AlarmReceiver : BroadcastReceiver() {
                 if (previous != null && nm.isNotificationPolicyAccessGranted) {
                     nm.setInterruptionFilter(previous); store.setText("old_ringer_filter", "")
                 }
-                if (c.morning) Alerts.notify(ctx, 103, "OFFLINE · Petit bilan", "Comment s'est passée ta soirée ?")
+                if (c.morning) {
+                    val priorities = store.getText("tomorrow_${LocalDate.now().minusDays(1)}").trim()
+                    if (priorities.isNotBlank()) Alerts.notify(ctx, 103, "OFFLINE · Priorités du jour", priorities.take(120))
+                }
             }
             "quota" -> {
                 val now = LocalTime.now()

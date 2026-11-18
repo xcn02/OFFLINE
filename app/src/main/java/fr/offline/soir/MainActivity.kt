@@ -22,6 +22,10 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import kotlinx.coroutines.delay
+import android.widget.Toast
+import android.media.ToneGenerator
+import android.media.AudioManager
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -61,6 +65,52 @@ fun OfflineApp() {
     var reason by remember { mutableStateOf("") }
     var cut by remember { mutableStateOf(false) }
     var slept by remember { mutableStateOf(false) }
+    var session by remember { mutableStateOf(store.session()) }
+    var clock by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var confirmPlane by remember { mutableStateOf(false) }
+    var grayInfo by remember { mutableStateOf(false) }
+    val activeTasks = cfg.tasks.filter { it.enabled }
+    val activeIndex = activeTasks.indexOfFirst { it.id == session?.taskId }
+    val activeTask = activeTasks.getOrNull(activeIndex)
+    val elapsedMs = if (session == null) 0L else ((if (session!!.pausedMs > 0) session!!.pausedMs else clock) - session!!.startedMs).coerceAtLeast(0L)
+    fun setSession(new: Store.Session?) { session = new; store.saveSession(new) }
+    fun finishNight() {
+        store.updateNight { it.copy(sleptAt=nowText()) }
+        slept = true
+        nights = store.nights()
+        setSession(null)
+        page = 0
+        if (cfg.plane) {
+            if (cfg.planeConfirm) confirmPlane = true else {
+                runCatching { ctx.startActivity(Intent(Settings.ACTION_AIRPLANE_MODE_SETTINGS)) }
+                    .onFailure { Toast.makeText(ctx, "Réglage mode avion indisponible", Toast.LENGTH_LONG).show() }
+            }
+        }
+    }
+    fun advance() {
+        val current = session ?: return
+        val position = activeTasks.indexOfFirst { it.id == current.taskId }
+        if (position < 0) { setSession(null); return }
+        store.setBoolean("done_${current.date}_${current.taskId}", true)
+        if (cfg.stepSound) runCatching {
+            ToneGenerator(AudioManager.STREAM_NOTIFICATION, 25).apply { startTone(ToneGenerator.TONE_PROP_BEEP, 100); release() }
+        }
+        val next = activeTasks.getOrNull(position + 1)
+        if (next != null) setSession(Store.Session(current.date, next.id, System.currentTimeMillis()))
+        else setSession(current.copy(completed=true, pausedMs=System.currentTimeMillis()))
+    }
+    LaunchedEffect(session?.taskId, session?.startedMs, session?.pausedMs, session?.completed, cfg.transition, cfg.tasks) {
+        while (true) {
+            delay(500)
+            clock = System.currentTimeMillis()
+            val state = session ?: continue
+            val task = cfg.tasks.firstOrNull { it.id == state.taskId } ?: continue
+            if (state.completed || state.pausedMs > 0) continue
+            val isTextEntry = task.id == 3L || task.id == 4L
+            val autoAdvance = cfg.transition == "auto" || (cfg.transition == "hybrid" && !isTextEntry)
+            if (autoAdvance && clock - state.startedMs >= task.minutes * 60_000L) advance()
+        }
+    }
     val today = LocalDate.now().toString()
     LaunchedEffect(page) {
         nights = store.nights()
@@ -92,22 +142,54 @@ fun OfflineApp() {
                                     Text(if(slept) "Bonne nuit. OFFLINE ne te relancera plus pour cette soirée." else if(cut) "Passe à tes activités, puis termine avec « Je vais dormir »." else "Éteins le PC et commence la routine du soir.")
                                     if (!cut && !slept) Button(onClick={
                                         store.updateNight { it.copy(cutAt=nowText()) }; cut=true; nights=store.nights(); page=1
-                                        if (cfg.gray) Alerts.notify(ctx,201,"OFFLINE · Noir et blanc","Active le niveau de gris depuis les réglages d'accessibilité.")
-                                        if (cfg.plane) Alerts.notify(ctx,202,"OFFLINE · Mode avion","Active le mode avion manuellement si tu le souhaites.")
+                                        if (session == null && activeTasks.isNotEmpty()) setSession(Store.Session(today, activeTasks.first().id, System.currentTimeMillis()))
                                     },modifier=Modifier.fillMaxWidth()) { Icon(Icons.Default.PowerSettingsNew,null); Spacer(Modifier.width(8.dp)); Text("Je coupe") }
                                     if (cut && !slept) Button(onClick={
-                                        store.updateNight { it.copy(sleptAt=nowText()) }; slept=true; nights=store.nights()
+                                        finishNight()
                                     },modifier=Modifier.fillMaxWidth()) { Icon(Icons.Default.Bedtime,null); Spacer(Modifier.width(8.dp)); Text("Je vais dormir") }
                                 }
                             }
                         }
+                        item {
+                            val yesterday = LocalDate.now().minusDays(1).toString()
+                            val priorities = store.getText("tomorrow_$yesterday")
+                            if (priorities.isNotBlank()) SettingCard("Priorités notées hier") { Text(priorities) }
+                        }
                         item { Heading("Routine prévue", "${cfg.tasks.filter{it.enabled}.sumOf{it.minutes}} minutes d'activités") }
                         items(cfg.tasks.filter{it.enabled}) { t -> ListItem(headlineContent={Text(t.name)}, supportingContent={Text("${t.minutes} min${if(t.optional) " · facultatif" else ""}")}, leadingContent={Icon(Icons.Default.CheckCircleOutline,null)}) }
-                        item { Text("Le noir et blanc et le mode avion nécessitent une action système distincte ; OFFLINE ne modifie pas ces réglages automatiquement.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant) }
+                        item { Text("Les réglages système protégés (niveaux de gris, mode avion) restent manuels sur Android standard.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant) }
                     }
                     1 -> {
-                        item { Heading("Mes activités", "Active, renomme et réorganise ta routine") }
-                        item { Text("Coche les étapes terminées. Les modifications restent accessibles à tout moment.",style=MaterialTheme.typography.bodySmall) }
+                        item { Heading("Routine guidée", "Progression discrète et activités personnalisables") }
+                        if (cut && !slept && session == null && activeTasks.isNotEmpty()) item {
+                            Button(onClick={setSession(Store.Session(today,activeTasks.first().id,System.currentTimeMillis()))}, modifier=Modifier.fillMaxWidth()) { Text("Démarrer la routine") }
+                        }
+                        if (cut && !slept && activeTask != null && session?.completed == false) item {
+                            ElevatedCard(Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(18.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+                                    Text("ACTIVITÉ ${activeIndex+1} / ${activeTasks.size}",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.primary)
+                                    Text(activeTask.name,style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.Bold)
+                                    val fraction = (elapsedMs.toFloat() / (activeTask.minutes*60_000f)).coerceIn(0f,1f)
+                                    LinearProgressIndicator(progress={fraction}, modifier=Modifier.fillMaxWidth().height(6.dp))
+                                    Text("${activeTask.minutes} min prévues · ${ (fraction*100).toInt() } %",style=MaterialTheme.typography.bodySmall)
+                                    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                                        OutlinedButton(onClick={
+                                            val s=session ?: return@OutlinedButton
+                                            setSession(if(s.pausedMs>0) s.copy(startedMs=System.currentTimeMillis()-(s.pausedMs-s.startedMs),pausedMs=0) else s.copy(pausedMs=System.currentTimeMillis()))
+                                        },modifier=Modifier.weight(1f)) { Text(if(session?.pausedMs==0L) "Pause" else "Reprendre") }
+                                        Button(onClick={advance()},modifier=Modifier.weight(1f)) { Text("Suivant") }
+                                    }
+                                    Text("En mode hybride, le journal et la préparation attendent ton appui sur Suivant.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                        if (session?.completed == true && cut && !slept) item {
+                            ElevatedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) {
+                                Text("Toutes les activités sont terminées ✓",fontWeight=FontWeight.Bold)
+                                Text("Tu peux maintenant poser ton téléphone.")
+                            } }
+                        }
+                        item { Text("Tu peux terminer une étape plus tôt ou la mettre en pause. Les minutes sont indicatives, pas une obligation.",style=MaterialTheme.typography.bodySmall) }
                         items(cfg.tasks.filter { it.enabled }, key={"check_"+it.id}) { task ->
                             var done by remember(task.id,today) { mutableStateOf(store.getBoolean("done_${today}_${task.id}")) }
                             ListItem(headlineContent={Text(task.name)},supportingContent={Text("${task.minutes} min")},leadingContent={
@@ -133,7 +215,7 @@ fun OfflineApp() {
                             }
                         }
                         item { OutlinedButton(onClick={adding=true;editor=null},modifier=Modifier.fillMaxWidth()) { Icon(Icons.Default.Add,null); Text(" Ajouter une activité") } }
-                        if (cut && !slept) item { Button(onClick={store.updateNight { it.copy(sleptAt=nowText()) };slept=true;nights=store.nights();page=0},modifier=Modifier.fillMaxWidth()) { Text("Je vais dormir") } }
+                        if (cut && !slept) item { Button(onClick={finishNight()},modifier=Modifier.fillMaxWidth()) { Text("Je vais dormir") } }
                     }
                     2 -> {
                         item { Heading("Historique", "Les 90 dernières soirées enregistrées localement") }
@@ -164,13 +246,31 @@ fun OfflineApp() {
                             SwitchSetting("Automatisations actives",cfg.enabled){save(cfg.copy(enabled=it))}
                         } }
                         item { SettingCard("Déconnexion numérique") {
-                            SwitchSetting("Proposer le noir et blanc",cfg.gray){save(cfg.copy(gray=it))}
-                            TextButton(onClick={ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))}){Text("Ouvrir les réglages de niveaux de gris")}
-                            SwitchSetting("Ne pas déranger automatique",cfg.dnd){save(cfg.copy(dnd=it))}
+                            SwitchSetting("Aide au noir et blanc (manuel)",cfg.gray){save(cfg.copy(gray=it));if(it)grayInfo=true}
+                            Text("Android standard ne permet pas à OFFLINE de changer les couleurs du système sans accès privilégié. Utilise le mode Coucher / Correction des couleurs d'Android.",style=MaterialTheme.typography.bodySmall)
+                            TextButton(onClick={ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))}){Text("Ouvrir les réglages d'accessibilité")}
+                            SwitchSetting("Ne pas déranger automatique",cfg.dnd){ requested ->
+                                val manager=ctx.getSystemService(NotificationManager::class.java)
+                                if (requested && !manager.isNotificationPolicyAccessGranted) {
+                                    ctx.startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+                                    Toast.makeText(ctx,"Autorise OFFLINE, puis active de nouveau l'option.",Toast.LENGTH_LONG).show()
+                                } else save(cfg.copy(dnd=requested))
+                            }
                             TextButton(onClick={ctx.startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))}){Text("Autoriser l'accès à Ne pas déranger")}
-                            SwitchSetting("Proposer le mode avion",cfg.plane){save(cfg.copy(plane=it))}
-                            TextButton(onClick={ctx.startActivity(Intent(Settings.ACTION_AIRPLANE_MODE_SETTINGS))}){Text("Ouvrir le réglage du mode avion")}
-                            SwitchSetting("Rappel fin du PC",cfg.reminder){save(cfg.copy(reminder=it))}
+                            SwitchSetting("Ouvrir le mode avion en fin de routine",cfg.plane){save(cfg.copy(plane=it))}
+                            if(cfg.plane) SwitchSetting("Demander confirmation avant ouverture",cfg.planeConfirm){save(cfg.copy(planeConfirm=it))}
+                            Text("L'ouverture a lieu après « Je vais dormir » ; l'activation reste manuelle.",style=MaterialTheme.typography.bodySmall)
+                            TextButton(onClick={ctx.startActivity(Intent(Settings.ACTION_AIRPLANE_MODE_SETTINGS))}){Text("Tester l'ouverture du mode avion")}
+                        } }
+                        item { SettingCard("Progression des activités") {
+                            Text("Passage entre les activités",fontWeight=FontWeight.SemiBold)
+                            listOf("hybrid" to "Hybride : automatique sauf saisie", "auto" to "Automatique : toutes les activités", "manual" to "Manuel : confirmation à chaque étape").forEach { (value,label) ->
+                                Row(Modifier.fillMaxWidth().clickable { save(cfg.copy(transition=value)) },verticalAlignment=Alignment.CenterVertically) {
+                                    RadioButton(selected=cfg.transition==value,onClick={save(cfg.copy(transition=value))})
+                                    Text(label,style=MaterialTheme.typography.bodyMedium)
+                                }
+                            }
+                            SwitchSetting("Signal discret entre les activités",cfg.stepSound){save(cfg.copy(stepSound=it))}
                         } }
                         item { SettingCard("Distractions · surveillance intermédiaire") {
                             Text("Quota d'utilisation du soir : ${cfg.quota} minutes")
@@ -182,7 +282,7 @@ fun OfflineApp() {
                             Text("Avertissement uniquement : aucun blocage d'application.",style=MaterialTheme.typography.bodySmall)
                         } }
                         item { SettingCard("Notifications et données") {
-                            SwitchSetting("Bilan du lendemain",cfg.morning){save(cfg.copy(morning=it))}
+                            SwitchSetting("Rappel des priorités du lendemain",cfg.morning){save(cfg.copy(morning=it))}
                             Text("Les activités et l'historique restent sur ce téléphone.",style=MaterialTheme.typography.bodySmall)
                             var confirm by remember { mutableStateOf(false) }
                             OutlinedButton(onClick={confirm=true}){Text("Effacer toutes les données")}
@@ -192,6 +292,8 @@ fun OfflineApp() {
                 }
             }
         }
+        if (confirmPlane) AlertDialog(onDismissRequest={confirmPlane=false},title={Text("Activer le mode avion ?")},text={Text("OFFLINE a terminé la soirée. Ouvre les réglages et active manuellement le mode avion avant de poser le téléphone.")},confirmButton={TextButton(onClick={confirmPlane=false;ctx.startActivity(Intent(Settings.ACTION_AIRPLANE_MODE_SETTINGS))}){Text("Ouvrir les réglages")}},dismissButton={TextButton(onClick={confirmPlane=false}){Text("Ignorer")}})
+        if (grayInfo) AlertDialog(onDismissRequest={grayInfo=false},title={Text("Niveaux de gris")},text={Text("Ce réglage ne peut pas être activé automatiquement par une application Android ordinaire. Configure le mode Coucher dans les réglages Android pour automatiser l'écran noir et blanc.")},confirmButton={TextButton(onClick={grayInfo=false;ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))}){Text("Réglages")}},dismissButton={TextButton(onClick={grayInfo=false}){Text("Plus tard")}})
         if (adding || editor != null) {
             var name by remember(editor,adding) { mutableStateOf(editor?.name ?: "") }
             var minutes by remember(editor,adding) { mutableStateOf((editor?.minutes ?: 5).toString()) }

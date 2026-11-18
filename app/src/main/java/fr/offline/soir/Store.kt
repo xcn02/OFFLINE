@@ -12,9 +12,10 @@ data class Config(
     val gray: Boolean = true, val dnd: Boolean = false, val plane: Boolean = false,
     val reminder: Boolean = true, val morning: Boolean = true, val quota: Int = 15,
     val packages: String = "com.twitter.android,com.reddit.frontpage",
+    val transition: String = "hybrid", val planeConfirm: Boolean = false, val stepSound: Boolean = false,
     val tasks: List<Task> = listOf(
-        Task(1, "Lecture", 15), Task(2, "Étirements", 5),
-        Task(3, "Préparer le lendemain", 3), Task(4, "Journal rapide", 2)
+        Task(2, "Étirements", 5), Task(3, "Préparer le lendemain", 3),
+        Task(4, "Journal rapide", 2), Task(1, "Lecture", 15)
     )
 )
 
@@ -37,7 +38,9 @@ class Store(private val ctx: Context) {
             j.optString("wake", defaults.wake), days, j.optBoolean("enabled", true),
             j.optBoolean("gray", true), j.optBoolean("dnd", false), j.optBoolean("plane", false),
             j.optBoolean("reminder", true), j.optBoolean("morning", true),
-            j.optInt("quota", 15).coerceIn(1, 120), j.optString("packages", defaults.packages), tasks)
+            j.optInt("quota", 15).coerceIn(1, 120), j.optString("packages", defaults.packages),
+            j.optString("transition", "hybrid").takeIf { it in setOf("hybrid", "auto", "manual") } ?: "hybrid",
+            j.optBoolean("planeConfirm", false), j.optBoolean("stepSound", false), tasks)
     } catch (_: Exception) { Config() }
 
     fun save(c: Config) {
@@ -47,6 +50,7 @@ class Store(private val ctx: Context) {
             put("gray", c.gray); put("dnd", c.dnd); put("plane", c.plane)
             put("reminder", c.reminder); put("morning", c.morning)
             put("quota", c.quota); put("packages", c.packages)
+            put("transition", c.transition); put("planeConfirm", c.planeConfirm); put("stepSound", c.stepSound)
             put("tasks", JSONArray().apply { c.tasks.forEach { t ->
                 put(JSONObject().apply {put("id", t.id); put("name", t.name); put("minutes", t.minutes); put("enabled", t.enabled); put("optional", t.optional) })
             } })
@@ -71,6 +75,21 @@ class Store(private val ctx: Context) {
         p.edit().putString("nights", JSONArray().apply { all.take(90).forEach { n ->
             put(JSONObject().apply { put("date", n.date); put("cutAt", n.cutAt); put("sleptAt", n.sleptAt); put("reason", n.reason) })
         } }.toString()).apply()
+    }
+    data class Session(val date: String, val taskId: Long, val startedMs: Long, val pausedMs: Long = 0L, val completed: Boolean = false)
+    fun session(): Session? { return try {
+        val raw = p.getString("active_session", null) ?: return null
+        val j = JSONObject(raw)
+        Session(j.getString("date"), j.getLong("taskId"), j.getLong("startedMs"), j.optLong("pausedMs"), j.optBoolean("completed"))
+    } catch (_: Exception) { null }
+    }
+    fun saveSession(s: Session?) {
+        if (s == null) { p.edit().remove("active_session").apply(); return }
+        val json = JSONObject().apply {
+            put("date", s.date); put("taskId", s.taskId); put("startedMs", s.startedMs)
+            put("pausedMs", s.pausedMs); put("completed", s.completed)
+        }
+        p.edit().putString("active_session", json.toString()).apply()
     }
     fun getText(key: String) = p.getString(key, "") ?: ""
     fun setText(key: String, value: String) = p.edit().putString(key, value).apply()

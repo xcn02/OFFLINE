@@ -1,50 +1,30 @@
-# OFFLINE — application Android de fin de soirée
+# OFFLINE Android — V0.2.0
 
-Prototype natif Android (Kotlin + Jetpack Compose). Version **0.1.0**, sans compte ni serveur.
+Application personnelle Android Kotlin / Jetpack Compose pour la fin de soirée.
 
-## Fonctionnalités actuellement codées
+## Nouveautés V0.2
 
-- Accueil : objectif de coucher, **Je coupe** et **Je vais dormir**.
-- Routine : activités personnalisées (ajouter, renommer, modifier durée, rendre facultative, désactiver, supprimer, réordonner), cases à cocher pour chaque soirée.
-- Notes du soir : priorités du lendemain et journal libre.
-- Historique local : heure déclarée de déconnexion, heure déclarée de coucher et cause facultative des dérapages.
-- Paramètres : heures de début, coucher et réveil, jours actifs, notifications, options système.
-- Programmation Android : alarmes de rappel inexactes, reconstruites après redémarrage et changement d'heure.
-- Option « Ne pas déranger » : nécessite l'autorisation système ; restauration du filtre précédent à l'heure du matin.
-- Surveillance **intermédiaire** des applications via Usage Access : avertissement à partir du quota configuré, contrôle environ toutes les 15 minutes pendant la plage de routine. Les identifiants des applications sont saisis manuellement.
-- Propositions pour noir et blanc et mode avion, avec liens directs vers les réglages Android.
+- Icône vectorielle OFFLINE (lune et étoiles).
+- Routine guidée : appuyer sur « Je coupe » démarre la première activité ; barre de progression discrète, boutons pause/reprise et suivant ; état sauvegardé localement.
+- Transitions paramétrables : hybride (automatique pour les activités chronométrées et manuel pour préparation/journal), automatique, manuel. Les activités de saisie sont actuellement reconnues par leurs IDs d'origine (3 et 4), y compris après renommage.
+- « Je vais dormir » termine la soirée, même si certaines activités ne sont pas faites. Si l'option est cochée, ouvre la page Android du mode avion pour activation manuelle ; confirmation facultative.
+- Journal et priorités enregistrés localement. Les priorités de la veille sont visibles dans l'accueil le lendemain et peuvent figurer dans un rappel matinal.
+- Option d'aide au noir et blanc : explication et raccourci vers les réglages d'accessibilité. Android standard ne permet pas d'activer arbitrairement les niveaux de gris depuis une application ordinaire.
+- Suppression du réglage redondant « rappel fin du PC » ; la notification de déconnexion reste.
+- Release optimisée par R8 et shrinkResources ; `abiFilters = arm64-v8a`. Les dépendances Compose sont pour l'essentiel du bytecode Java/Kotlin : l'ABI ARM64 seule ne garantit pas une grosse diminution de taille.
+- Version `0.2.0`, `versionCode = 2`, même `applicationId` : `fr.offline.soir`.
 
-## Limitations connues
+## Compiler
 
-- Le projet **n'a pas été compilé ni testé sur un appareil** dans cet environnement (SDK Android et Gradle indisponibles). Une vérification de compilation dans Android Studio est indispensable avant installation.
-- Aucun APK précompilé n'est fourni.
-- Le noir et blanc n'est **pas activé automatiquement** ; Android n'offre pas d'API publique standard pour le faire sans intervention/permissions privilégiées. Utiliser les réglages d'accessibilité ou le mode coucher du téléphone.
-- Le mode avion ne peut pas être activé par une application classique : ouverture des paramètres seulement.
-- Le PC ne peut pas être éteint depuis Android : seul un rappel est prévu.
-- Android peut retarder les alarmes inexactes, surtout en économie de batterie.
-- Le contrôle des distractions est un **avertissement**, pas un blocage des applications. La durée surveillée est indicative, selon les événements d'utilisation fournis par Android.
-- Le journal et les notes sont stockés localement ; aucune sauvegarde distante.
-- Les horaires traversant minuit et les cas de décalage horaire nécessitent encore des essais sur téléphone.
+À la racine du projet, utiliser `gradle :app:assembleRelease --no-daemon --console=plain` avec Java 17, Gradle 8.9 et Android SDK 35 ; ou utiliser GitHub Actions inclus.
 
-## Ouvrir et compiler
+Le workflow GitHub génère et signe un APK Release ARM64 avec **une clé de test temporaire nouvelle à chaque build**. Cela autorise l'installation locale, mais **empêche une mise à jour par-dessus une version précédente signée avec une clé différente** : désinstaller l'ancienne APK avant d'installer la nouvelle. **L'ancienne application et ses données seront supprimées lors de cette désinstallation.** Pour les mises à jour sans perte de données, configurer une clé de signature permanente via GitHub Secrets.
 
-1. Installer Android Studio récent (SDK Android 35, JDK 17 ou 21).
-2. Extraire le dossier `OFFLINE`, puis ouvrir **le dossier racine** dans Android Studio.
-3. Ce ZIP contient le projet Gradle et sa configuration, mais **pas le JAR du Gradle Wrapper**, absent de l'environnement de génération. Installer Gradle 8.9 si nécessaire, puis dans le dossier racine exécuter `gradle wrapper --gradle-version 8.9` pour générer `gradlew`, `gradlew.bat` et `gradle-wrapper.jar`.
-4. Synchroniser Gradle (accès Internet nécessaire au premier téléchargement des dépendances).
-5. Lancer sur un téléphone Android 8.0+ ou faire **Build > Build APK(s)**.
-6. Au premier lancement, autoriser les notifications. Pour les options choisies, autoriser l'accès aux statistiques d'utilisation et/ou « Ne pas déranger » depuis les paramètres de l'application.
+## Limites actuelles
 
-## Architecture
-
-- `MainActivity.kt` : interface Jetpack Compose ; quatre onglets.
-- `Store.kt` : configuration, activités et historique en SharedPreferences/JSON.
-- `Automation.kt` : programmation via `AlarmManager`, notifications, accès statistiques, rétablissement DND, événements de redémarrage.
-
-## Prochaines étapes avant une version stable
-
-- Tester les builds Android Studio et corriger toute incompatibilité dépendante de la version du SDK.
-- Tester les alertes sur plusieurs marques et versions Android.
-- Améliorer la saisie des applications surveillées avec un vrai sélecteur d'applications, plutôt que des noms de packages.
-- Ajouter des notifications d'étapes optionnelles, un minuteur pour la lecture et des statistiques hebdomadaires.
-- Offrir une exportation de données si nécessaire.
+- Compilation non testée dans cet environnement (pas de Gradle/SDK Android). Le workflow GitHub doit confirmer le build.
+- Le chronomètre utilise l'heure réelle et est sauvegardé ; il se met à jour tant que l'écran de l'app reste actif et retrouve le temps écoulé quand on rouvre l'application. Le passage automatique en arrière-plan n'est pas garanti sans service/notification persistante.
+- Le noir et blanc n'est pas automatiquement activé ; configurer le mode coucher natif Android pour cela. L'option dans OFFLINE est une aide à la configuration.
+- Le mode avion ne peut pas être activé par une app Android standard. OFFLINE ouvre la page système après l'appui sur « Je vais dormir ».
+- Le quota de distractions fournit un avertissement indicatif, pas un blocage.
+- Le suivi des notes reste dans OFFLINE, aucun envoi serveur.
