@@ -28,3 +28,10 @@ Workflow GitHub Actions : `gradle :app:assembleRelease` puis signature de test e
 6. Le lendemain : cases du lever remises à zéro.
 
 **Compilation non exécutée dans cet environnement** : SDK Android/Gradle non disponibles. Le workflow GitHub Actions est fourni, mais son résultat doit être testé.
+
+
+## V0.4.2 — Organisation de la page Routine
+- Routine du matin déplacée depuis Réglages vers la fin de l’onglet Routine.
+- Séparation visuelle des activités du soir, de leur gestion et de la routine du matin.
+- Bouton « Je vais dormir » immédiatement après les activités du soir.
+- Données et paramètres existants conservés.

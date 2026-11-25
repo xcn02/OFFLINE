@@ -228,7 +228,7 @@ fun OfflineApp(startImmediately: Boolean = false) {
                         item { Text("Les réglages système protégés (niveaux de gris, mode avion) restent manuels sur Android standard.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant) }
                     }
                     1 -> {
-                        item { Heading("Routine guidée", "Progression discrète et activités personnalisables") }
+                        item { Heading("Routine du soir", "Progression discrète et activités personnalisables") }
                         if (cut && !slept && session == null && activeTasks.isNotEmpty()) item {
                             Button(onClick={setSession(Store.Session(today,activeTasks.firstOrNull{!done(it.id)}?.id ?: activeTasks.first().id,System.currentTimeMillis()))}, modifier=Modifier.fillMaxWidth()) { Text("Démarrer la routine") }
                         }
@@ -276,8 +276,16 @@ fun OfflineApp(startImmediately: Boolean = false) {
                                 })
                             })
                         }
+                        if (cut && !slept) item {
+                            Button(onClick={finishNight()},modifier=Modifier.fillMaxWidth()) {
+                                Icon(Icons.Default.Bedtime,null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Je vais dormir")
+                            }
+                        }
                         item { NotesPanel(tomorrow, journal, onTomorrow={updateNote("tomorrow", it)}, onJournal={updateNote("journal", it)}, initiallyExpanded=false) }
-                        item { Heading("Gérer les activités", "Ajout, modification, réorganisation") }
+                        item { HorizontalDivider(modifier=Modifier.padding(vertical=12.dp)) }
+                        item { Heading("Gérer les activités du soir", "Ajout, modification, réorganisation") }
                         items(cfg.tasks, key={it.id}) { task ->
                             ElevatedCard(Modifier.fillMaxWidth()) {
                                 Row(Modifier.padding(10.dp),verticalAlignment=Alignment.CenterVertically) {
@@ -290,7 +298,27 @@ fun OfflineApp(startImmediately: Boolean = false) {
                             }
                         }
                         item { OutlinedButton(onClick={adding=true;editor=null},modifier=Modifier.fillMaxWidth()) { Icon(Icons.Default.Add,null); Text(" Ajouter une activité") } }
-                        if (cut && !slept) item { Button(onClick={finishNight()},modifier=Modifier.fillMaxWidth()) { Text("Je vais dormir") } }
+                        item { HorizontalDivider(modifier=Modifier.padding(vertical=12.dp)) }
+                        item { Heading("Routine du matin", "Consignes et détails personnalisés pour le lever") }
+                        item { SettingCard("Petite routine du lever") {
+                            SwitchSetting("Activer la routine du matin", cfg.morningRoutine) { save(cfg.copy(morningRoutine=it)) }
+                            if (cfg.morningRoutine) {
+                                var morning1 by remember(cfg.morningStep1) { mutableStateOf(cfg.morningStep1) }
+                                var morning2 by remember(cfg.morningStep2) { mutableStateOf(cfg.morningStep2) }
+                                var detail1 by remember(cfg.morningDetail1) { mutableStateOf(cfg.morningDetail1) }
+                                var detail2 by remember(cfg.morningDetail2) { mutableStateOf(cfg.morningDetail2) }
+                                OutlinedTextField(value=morning1,onValueChange={morning1=it},label={Text("Première chose à faire au lever")},modifier=Modifier.fillMaxWidth())
+                                OutlinedTextField(value=detail1,onValueChange={detail1=it},label={Text("Détails (facultatifs)")},
+                                    placeholder={Text("Ex. 10 squats, 10 pompes, 5 min d'étirements")},
+                                    minLines=2,maxLines=5,modifier=Modifier.fillMaxWidth())
+                                OutlinedTextField(value=morning2,onValueChange={morning2=it},label={Text("Deuxième chose (facultative)")},modifier=Modifier.fillMaxWidth())
+                                OutlinedTextField(value=detail2,onValueChange={detail2=it},label={Text("Détails (facultatifs)")},
+                                    minLines=2,maxLines=5,modifier=Modifier.fillMaxWidth())
+                                TextButton(onClick={save(cfg.copy(morningStep1=morning1.trim(),morningStep2=morning2.trim(),
+                                    morningDetail1=detail1.trim(),morningDetail2=detail2.trim()))}) { Text("Enregistrer la routine du lever") }
+                                Text("Le matin, chaque consigne apparaît avec sa légende sous le titre et sa case à cocher. Les détails restent facultatifs.",style=MaterialTheme.typography.bodySmall)
+                            }
+                        } }
                     }
                     2 -> {
                         item { Heading("Historique", "Les 90 dernières soirées enregistrées localement") }
@@ -406,25 +434,6 @@ fun OfflineApp(startImmediately: Boolean = false) {
                                 Text("Une autorisation Android est nécessaire. La notification de service n’apparaît que pendant la plage du soir, jusqu’à 4 h maximum. Android peut retarder son démarrage automatique.",style=MaterialTheme.typography.bodySmall)
                             }
                             Text("Après « Je coupe » ou « Ignorer ce soir », les rappels cessent. En mode renforcé, le pop-up nécessite toujours ton autorisation ; les sons et vibrations dépendent des réglages Android.",style=MaterialTheme.typography.bodySmall)
-                        } }
-                        item { SettingCard("Petite routine du lever") {
-                            SwitchSetting("Activer la routine du matin", cfg.morningRoutine) { save(cfg.copy(morningRoutine=it)) }
-                            if (cfg.morningRoutine) {
-                                var morning1 by remember(cfg.morningStep1) { mutableStateOf(cfg.morningStep1) }
-                                var morning2 by remember(cfg.morningStep2) { mutableStateOf(cfg.morningStep2) }
-                                var detail1 by remember(cfg.morningDetail1) { mutableStateOf(cfg.morningDetail1) }
-                                var detail2 by remember(cfg.morningDetail2) { mutableStateOf(cfg.morningDetail2) }
-                                OutlinedTextField(value=morning1,onValueChange={morning1=it},label={Text("Première chose à faire au lever")},modifier=Modifier.fillMaxWidth())
-                                OutlinedTextField(value=detail1,onValueChange={detail1=it},label={Text("Détails (facultatifs)")},
-                                    placeholder={Text("Ex. 10 squats, 10 pompes, 5 min d'étirements")},
-                                    minLines=2,maxLines=5,modifier=Modifier.fillMaxWidth())
-                                OutlinedTextField(value=morning2,onValueChange={morning2=it},label={Text("Deuxième chose (facultative)")},modifier=Modifier.fillMaxWidth())
-                                OutlinedTextField(value=detail2,onValueChange={detail2=it},label={Text("Détails (facultatifs)")},
-                                    minLines=2,maxLines=5,modifier=Modifier.fillMaxWidth())
-                                TextButton(onClick={save(cfg.copy(morningStep1=morning1.trim(),morningStep2=morning2.trim(),
-                                    morningDetail1=detail1.trim(),morningDetail2=detail2.trim()))}) { Text("Enregistrer la routine du lever") }
-                                Text("Le matin, chaque consigne apparaît avec sa légende sous le titre et sa case à cocher. Les détails restent facultatifs.",style=MaterialTheme.typography.bodySmall)
-                            }
                         } }
                         item { SettingCard("Notifications et données") {
                             SwitchSetting("Rappel des priorités du lendemain",cfg.morning){save(cfg.copy(morning=it))}
