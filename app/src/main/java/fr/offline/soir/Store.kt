@@ -20,6 +20,8 @@ data class Config(
     val reminderTitle: String = "Il est temps de décrocher",
     val reminderMessage: String = "Éteins le PC et commence ta routine du soir.",
     val transition: String = "hybrid", val planeConfirm: Boolean = false, val stepSound: Boolean = false,
+    val morningRoutine: Boolean = false, val morningStep1: String = "", val morningStep2: String = "",
+    val morningDetail1: String = "", val morningDetail2: String = "",
     val tasks: List<Task> = listOf(
         Task(2, "Étirements", 5), Task(3, "Préparer le lendemain", 3),
         Task(4, "Journal rapide", 2), Task(1, "Lecture", 15)
@@ -54,7 +56,9 @@ class Store(private val ctx: Context) {
             j.optString("reminderTitle", "Il est temps de décrocher"),
             j.optString("reminderMessage", "Éteins le PC et commence ta routine du soir."),
             j.optString("transition", "hybrid").takeIf { it in setOf("hybrid", "auto", "manual") } ?: "hybrid",
-            j.optBoolean("planeConfirm", false), j.optBoolean("stepSound", false), tasks)
+            j.optBoolean("planeConfirm", false), j.optBoolean("stepSound", false),
+            j.optBoolean("morningRoutine", false), j.optString("morningStep1", ""), j.optString("morningStep2", ""),
+            j.optString("morningDetail1", ""), j.optString("morningDetail2", ""), tasks)
     } catch (_: Exception) { Config() }
 
     fun save(c: Config) {
@@ -68,6 +72,7 @@ class Store(private val ctx: Context) {
             put("unlockPopup", c.unlockPopup); put("popupOverlay", c.popupOverlay)
             put("reminderTitle", c.reminderTitle); put("reminderMessage", c.reminderMessage)
             put("transition", c.transition); put("planeConfirm", c.planeConfirm); put("stepSound", c.stepSound)
+            put("morningRoutine", c.morningRoutine); put("morningStep1", c.morningStep1); put("morningStep2", c.morningStep2); put("morningDetail1", c.morningDetail1); put("morningDetail2", c.morningDetail2)
             put("tasks", JSONArray().apply { c.tasks.forEach { t ->
                 put(JSONObject().apply {put("id", t.id); put("name", t.name); put("minutes", t.minutes); put("enabled", t.enabled); put("optional", t.optional) })
             } })

@@ -57,7 +57,13 @@ class UnlockOverlayService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val c = Store(this).load()
-        if (!c.unlockPopup || !c.popupOverlay || !Settings.canDrawOverlays(this)) {
+        val start = runCatching { LocalTime.parse(c.start) }.getOrDefault(LocalTime.of(22,45))
+        val current = LocalTime.now()
+        val active = current >= start || current < LocalTime.of(4,0)
+        val store = Store(this)
+        val date = eveningDate().toString()
+        if (!c.enabled || !active || store.isFinished(date) || store.isStarted(date) || store.getBoolean("ignored_$date") ||
+            !c.unlockPopup || !c.popupOverlay || !Settings.canDrawOverlays(this)) {
             stopSelf()
             return START_NOT_STICKY
         }
@@ -72,7 +78,7 @@ class UnlockOverlayService : Service() {
         val start = runCatching { LocalTime.parse(cfg.start) }.getOrDefault(LocalTime.of(22,45))
         val isEvening = current >= start || current < LocalTime.of(4,0)
         if (!cfg.enabled || !cfg.unlockPopup || !cfg.popupOverlay || !Settings.canDrawOverlays(this) || !isEvening ||
-            store.isFinished(date) || store.isStarted(date) ||
+            store.isFinished(date) || store.isStarted(date) || store.getBoolean("ignored_$date") ||
             (store.getText("snooze_$date").toLongOrNull() ?: 0L) > System.currentTimeMillis()) return
         if (window != null) return
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -108,6 +114,7 @@ class UnlockOverlayService : Service() {
         btn("Ignorer pour ce soir") {
             store.setBoolean("ignored_$date", true)
             Scheduler.stopRepeat(this)
+            Scheduler.stopOverlay(this)
         }
         val params = WindowManager.LayoutParams((resources.displayMetrics.widthPixels*0.88).toInt(),
             WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,

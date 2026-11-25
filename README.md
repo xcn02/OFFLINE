@@ -1,20 +1,30 @@
-# OFFLINE Android — V0.3.0
+# OFFLINE Android V0.4.1 — légendes de la routine du lever
 
-Application Android Kotlin / Jetpack Compose pour décrocher des écrans le soir. Données stockées **localement** dans SharedPreferences et JSON. Aucune connexion ou compte nécessaire.
+Deux champs de détails facultatifs ont été ajoutés aux réglages de la routine du matin. Chaque détail est affiché sous sa consigne sur l’accueil, avec retours à la ligne, et la case à cocher reste liée à la consigne. Les données V0.4 existantes sont conservées par le code grâce aux valeurs par défaut. Les détails ne sont pas repris dans la notification matinale pour éviter une notification trop longue.
 
-## Evolutions V0.3
+# OFFLINE Android V0.4.0 — évolution ciblée depuis V0.3
 
-- **Rappels** : message/titre personnalisables ; normal, insistant (par défaut), renforcé ; relance à 5/10/15 min ; notification prioritaire et persistante avec actions « Je coupe », « Encore 10 min », « Ignorer ce soir ». Le rappel cesse au lancement de la routine ou à la fin de la soirée.
-- **Dernière activité** : « Je termine dans 10 minutes » sur l'accueil, avec relance programmée. Les reports restent facultatifs.
-- **Pop-up lors d'un déverrouillage** : option dans Réglages > Rappels. Necessite l'autorisation Android « Afficher par-dessus les autres applis ». Un service au premier plan affiche une notification technique persistante et écoute le déverrouillage. Le système Android peut arrêter/limiter ce service : fonctionnement **non garanti** sur tous les modèles. Le pop-up est désactivé tant que l'utilisateur n'autorise pas explicitement la superposition. Après activation des permissions, activer l'option correspondante. Ne pas activer si la notification permanente gêne.
-- **Activités** : les cases à cocher sont désormais liées à la progression guidée. Cocher l'étape active fait avancer, décocher permet de revenir à cette étape. La sauvegarde persiste.
-- **Notes** : « Notes du soir » dépliables dans Accueil et Routine, modifiables même si la routine n'est pas commencée. Pendant les activités « Journal rapide » et « Préparer le lendemain », le champ approprié est dans la carte principale et synchronisé.
-- **Notes quotidiennes** : une fiche locale par soirée ; changement de soirée à 04h ; notes consultables/modifiables dans Historique, y compris si la routine n'a pas été commencée. Les priorités du matin reprennent le texte enregistré la veille à l'heure configurée.
-- **Surveillance** : YouTube et Instagram ajoutés aux applications surveillées par défaut, avec X et Reddit. Surveillance par quota, pas de blocage, requiert l'accès aux statistiques Android.
-- **Fonctions V0.2 conservées** : modification, ordre et durée des activités ; minuteur, progression, trois transitions ; historique, mode avion à la fin (« Je vais dormir ») **ouvre le panneau Android, sans activer directement le mode avion** ; ne pas déranger ; niveau de gris manuel.
+## Modifications V0.4
+- **Notification permanente de surveillance** : le service de pop-up n'est plus démarré en journée à l'ouverture des réglages. Son lancement est demandé à l'heure de déconnexion configurée. Il s'arrête à 04h, au lancement de la routine, après « Je vais dormir » ou « Ignorer ce soir ». Une ouverture d'OFFLINE dans la plage du soir peut aussi relancer le service. Le déclenchement depuis l'arrière-plan dépend des restrictions Android / batterie.
+- **Rappels renforcés** : relance toutes les 5 minutes, canal de notification séparé de priorité haute avec vibration marquée, rappel à l'heure du coucher, pop-up au déverrouillage si autorisé. Android conserve le contrôle des sons, des alertes et des autorisations, donc l'affichage n'est pas garanti à chaque fois. Les niveaux Normal et Insistant restent disponibles.
+- **Petite routine du lever** : option désactivée par défaut. Jusqu'à deux consignes libres dans Réglages > Petite routine du lever, affichées le matin dans Accueil avec cases à cocher enregistrées pour la journée. Le rappel à l'heure du réveil reprend les consignes et, si activées, les priorités de la veille.
+- **V0.3 conservée** : interface, notes, historique, activités, mode avion, paramètres et données conservés par le code.
 
-## Compiler
+## Installation / signature
+Workflow GitHub Actions : `gradle :app:assembleRelease` puis signature de test et export APK ARM64.
+**Attention** : la clé de test est régénérée à chaque compilation. Installer une nouvelle version par-dessus une précédente signée différemment ne fonctionne pas et désinstaller l'ancienne fait perdre les données locales. Pour protéger les journaux et historiques, configurer une clé de signature permanente avant mise à jour.
 
-Le workflow `.github/workflows/android.yml` compile un APK release ARM64 optimisé avec R8, puis le signe. Il utilise **une clé de test régénérée à chaque compilation** : pour installer un nouvel APK, il faudra désinstaller celui signé avec la clé précédente, perdant les données locales. Pour distribuer des mises à jour préservant les notes, configurez une clé de signature **permanente** avant vos premiers usages prolongés.
+## Limites Android
+- Début de service en arrière-plan à heure donnée : limité par Android (AlarmManager inexact, démarrage de service au premier plan, restrictions batterie). La notification classique est la solution de secours.
+- Pop-up au déverrouillage : nécessite la permission Android « Afficher par-dessus les autres applications », et peut ne pas fonctionner selon les restrictions du constructeur.
+- Le mode avion reste une ouverture des réglages après « Je vais dormir », sans activation automatique.
 
-Pas de validation de compilation ou d'exécution effectuée dans cet environnement faute d'Android SDK. Vérifiez la compilation GitHub Actions puis le fonctionnement réel sur votre téléphone (Android 13 à 15, permissions de notifications, de superposition, veille et redémarrage).
+## Tests recommandés
+1. En journée : aucune notification persistante de surveillance, malgré pop-up activé.
+2. Heure de déconnexion : notification de rappel ; si Android permet le service, notification persistante de surveillance.
+3. « Je coupe » : arrêt des rappels et du service.
+4. Mode renforcé : notification toutes les 5 min avant le début de la routine, vibration si autorisée.
+5. Réglages : routine du lever activée avec deux consignes, visibles le matin dans Accueil ; cases conservées après fermeture et réouverture.
+6. Le lendemain : cases du lever remises à zéro.
+
+**Compilation non exécutée dans cet environnement** : SDK Android/Gradle non disponibles. Le workflow GitHub Actions est fourni, mais son résultat doit être testé.

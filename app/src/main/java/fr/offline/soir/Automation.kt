@@ -16,6 +16,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Process
 import android.provider.Settings
+import androidx.core.content.ContextCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import java.time.LocalDate
@@ -25,7 +26,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 object Scheduler {
-    private val kinds = listOf("start", "bed", "wake", "quota", "repeat")
+    private val kinds = listOf("start", "bed", "wake", "quota", "repeat", "overlay_stop")
     private fun pending(ctx: Context, kind: String): PendingIntent = PendingIntent.getBroadcast(
         ctx, kinds.indexOf(kind) + 100, Intent(ctx, AlarmReceiver::class.java).setAction("fr.offline.$kind"),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -38,13 +39,13 @@ object Scheduler {
     private fun next(c: Config, kind: String): Long? {
         if (!c.enabled || c.days.isEmpty()) return null
         val now = LocalDateTime.now()
-        val at = when (kind) { "start", "quota", "repeat" -> c.start; "bed" -> c.bed; else -> c.wake }
+        val at = when (kind) { "start", "quota", "repeat" -> c.start; "bed" -> c.bed; "overlay_stop" -> "04:00"; else -> c.wake }
         val time = try { LocalTime.parse(at) } catch (_: Exception) { return null }
         for (offset in 0..8) {
             val d = LocalDate.now().plusDays(offset.toLong())
             // The morning event belongs to the previous evening's schedule.
             val enabledDay = if (kind == "wake") d.minusDays(1).dayOfWeek.value else d.dayOfWeek.value
-            if (enabledDay !in c.days) continue
+            if (kind != "overlay_stop" && enabledDay !in c.days) continue
             var target = LocalDateTime.of(d, time)
             if (kind == "wake") {
                 // For early wake times, use the morning after the selected evening.
@@ -63,7 +64,8 @@ object Scheduler {
         if (!c.enabled) return
         val alarm = ctx.getSystemService(AlarmManager::class.java)
         kinds.filter { it != "repeat" }.forEach { kind ->
-            if ((kind == "quota" && c.packages.isBlank()) || (kind == "wake" && !c.morning && !c.dnd)) return@forEach
+            if ((kind == "quota" && c.packages.isBlank()) || (kind == "wake" && !c.morning && !c.dnd && !c.morningRoutine) ||
+                (kind == "overlay_stop" && (!c.unlockPopup || !c.popupOverlay))) return@forEach
             val time = next(c, kind) ?: return@forEach
             // Inexact alarms avoid special 'exact alarm' permission and can be delayed by Android.
             alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, time, pending(ctx, kind))
@@ -73,6 +75,20 @@ object Scheduler {
     fun scheduleRepeat(ctx: Context, minutes: Int) {
         val alarm = ctx.getSystemService(AlarmManager::class.java)
         alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + minutes * 60_000L, pending(ctx, "repeat"))
+    }
+
+    fun stopOverlay(ctx: Context) { ctx.stopService(Intent(ctx, UnlockOverlayService::class.java)) }
+
+    fun startOverlayIfDue(ctx: Context, c: Config = Store(ctx).load()) {
+        val time = LocalTime.now()
+        val start = runCatching { LocalTime.parse(c.start) }.getOrDefault(LocalTime.of(22, 45))
+        val validTime = time >= start || time < LocalTime.of(4,0)
+        val store = Store(ctx)
+        val date = eveningDate().toString()
+        if (c.enabled && c.unlockPopup && c.popupOverlay && Settings.canDrawOverlays(ctx) &&
+            validTime && !store.isStarted(date) && !store.isFinished(date)) {
+            runCatching { ContextCompat.startForegroundService(ctx, Intent(ctx, UnlockOverlayService::class.java)) }
+        } else stopOverlay(ctx)
     }
 
     fun stopRepeat(ctx: Context) {
@@ -88,17 +104,23 @@ object Scheduler {
 object Alerts {
     private const val CHANNEL = "offline_evening_v3"
     private const val MORNING_CHANNEL = "offline_morning"
-    fun notify(ctx: Context, id: Int, title: String, body: String, persistent: Boolean = false) {
+    private const val STRONG_CHANNEL = "offline_evening_strong_v4"
+    fun notify(ctx: Context, id: Int, title: String, body: String, persistent: Boolean = false, strong: Boolean = false) {
         val nm = ctx.getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Rappels OFFLINE", NotificationManager.IMPORTANCE_HIGH))
         nm.createNotificationChannel(NotificationChannel(MORNING_CHANNEL, "Priorités du matin", NotificationManager.IMPORTANCE_DEFAULT))
+        nm.createNotificationChannel(NotificationChannel(STRONG_CHANNEL, "Rappels renforcés OFFLINE", NotificationManager.IMPORTANCE_HIGH).apply {
+            enableVibration(true)
+            vibrationPattern = longArrayOf(0, 350, 180, 350, 180, 500)
+        })
         if (Build.VERSION.SDK_INT >= 33 && ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         val content = PendingIntent.getActivity(ctx, 0, Intent(ctx, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        val builder = NotificationCompat.Builder(ctx, if (id == 103) MORNING_CHANNEL else CHANNEL)
+        val builder = NotificationCompat.Builder(ctx, if (id == 103) MORNING_CHANNEL else if (strong) STRONG_CHANNEL else CHANNEL)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle(title).setContentText(body).setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setPriority(if (id == 103) NotificationCompat.PRIORITY_DEFAULT else NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(!persistent).setOngoing(persistent).setContentIntent(content)
+            .setCategory(if (strong) NotificationCompat.CATEGORY_REMINDER else NotificationCompat.CATEGORY_STATUS)
         if (id == 101) {
             val start = PendingIntent.getActivity(ctx, 151, Intent(ctx, MainActivity::class.java).putExtra("start_routine", true), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             val postpone = PendingIntent.getBroadcast(ctx, 152, Intent(ctx, ReminderActionReceiver::class.java).setAction("postpone"), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -111,9 +133,10 @@ object Alerts {
         val store = Store(ctx)
         val c = store.load()
         val date = eveningDate().toString()
-        if (!c.enabled || !c.reminder || store.isFinished(date) || store.isStarted(date) || store.getText("snooze_$date").toLongOrNull()?.let { it > System.currentTimeMillis() } == true) return
-        notify(ctx, 101, c.reminderTitle, c.reminderMessage, persistent = c.reminderLevel != "normal")
-        if (c.reminderLevel != "normal") Scheduler.scheduleRepeat(ctx, c.repeatMinutes)
+        if (!c.enabled || !c.reminder || store.isFinished(date) || store.isStarted(date) || store.getBoolean("ignored_$date") || store.getText("snooze_$date").toLongOrNull()?.let { it > System.currentTimeMillis() } == true) return
+        val strong = c.reminderLevel == "strict"
+        notify(ctx, 101, c.reminderTitle, c.reminderMessage, persistent = c.reminderLevel != "normal", strong = strong)
+        if (c.reminderLevel != "normal") Scheduler.scheduleRepeat(ctx, if (strong) 5 else c.repeatMinutes)
     }
 }
 
@@ -125,6 +148,7 @@ class ReminderActionReceiver : BroadcastReceiver() {
             "ignore" -> {
                 store.setBoolean("ignored_$date", true)
                 Scheduler.stopRepeat(ctx)
+                Scheduler.stopOverlay(ctx)
             }
             "postpone" -> {
                 store.setText("snooze_$date", (System.currentTimeMillis() + 10*60_000L).toString())
@@ -148,6 +172,7 @@ class AlarmReceiver : BroadcastReceiver() {
         if (intent.action != "fr.offline.quota" && intent.action != "fr.offline.repeat") Scheduler.schedule(ctx, c)
         when(intent.action?.removePrefix("fr.offline.")) {
             "start" -> {
+                Scheduler.startOverlayIfDue(ctx, c)
                 Alerts.eveningReminder(ctx)
                 if (c.dnd) {
                     val nm = ctx.getSystemService(NotificationManager::class.java)
@@ -160,11 +185,12 @@ class AlarmReceiver : BroadcastReceiver() {
                 Scheduler.scheduleQuotaCheck(ctx)
             }
             "repeat" -> { Alerts.eveningReminder(ctx) }
+            "overlay_stop" -> Scheduler.stopOverlay(ctx)
             "bed" -> {
                 val store = Store(ctx)
                 val date = eveningDate().toString()
                 if (!store.isFinished(date)) {
-                    Alerts.notify(ctx, 102, "OFFLINE · Heure de dormir", "Termine ta routine puis appuie sur « Je vais dormir ».")
+                    Alerts.notify(ctx, 102, "OFFLINE · Heure de dormir", "Termine ta routine puis appuie sur « Je vais dormir ».", strong = c.reminderLevel == "strict")
                     if (!store.isStarted(date)) Alerts.eveningReminder(ctx)
                 }
             }
@@ -175,9 +201,11 @@ class AlarmReceiver : BroadcastReceiver() {
                 if (previous != null && nm.isNotificationPolicyAccessGranted) {
                     nm.setInterruptionFilter(previous); store.setText("old_ringer_filter", "")
                 }
-                if (c.morning) {
+                if (c.morning || c.morningRoutine) {
+                    val steps = if (c.morningRoutine) listOf(c.morningStep1, c.morningStep2).filter { it.isNotBlank() }.joinToString(" · ") else ""
                     val priorities = store.getText("tomorrow_${LocalDate.now().minusDays(1)}").trim()
-                    if (priorities.isNotBlank()) Alerts.notify(ctx, 103, "OFFLINE · Priorités du jour", priorities.take(300))
+                    val content = listOf(steps, if (c.morning) priorities else "").filter { it.isNotBlank() }.joinToString(" — ")
+                    if (content.isNotBlank()) Alerts.notify(ctx, 103, "OFFLINE · À faire ce matin", content.take(300))
                 }
             }
             "quota" -> {
@@ -223,5 +251,5 @@ class AlarmReceiver : BroadcastReceiver() {
 }
 
 class BootReceiver : BroadcastReceiver() {
-    override fun onReceive(ctx: Context, intent: Intent) { Scheduler.schedule(ctx) }
+    override fun onReceive(ctx: Context, intent: Intent) { Scheduler.stopOverlay(ctx); Scheduler.schedule(ctx) }
 }

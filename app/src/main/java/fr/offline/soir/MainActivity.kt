@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity() {
             requestNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         Scheduler.schedule(this)
+        Scheduler.startOverlayIfDue(this)
         setContent { OfflineApp(intent.getBooleanExtra("start_routine", false)) }
     }
 }
@@ -94,6 +95,7 @@ fun OfflineApp(startImmediately: Boolean = false) {
         if (!store.isStarted(today)) store.updateNight(today) { it.copy(cutAt = nowText()) }
         cut = true; slept = false; nights = store.nights()
         Scheduler.stopRepeat(ctx)
+        Scheduler.stopOverlay(ctx)
         val first = cfg.tasks.firstOrNull { it.enabled && !done(it.id) }
         if (first != null && (session == null || session?.date != today)) {
             session = Store.Session(today, first.id, System.currentTimeMillis())
@@ -108,6 +110,7 @@ fun OfflineApp(startImmediately: Boolean = false) {
         nights = store.nights()
         setSession(null)
         Scheduler.stopRepeat(ctx)
+        Scheduler.stopOverlay(ctx)
         page = 0
         if (cfg.plane) {
             if (cfg.planeConfirm) confirmPlane = true else {
@@ -149,12 +152,11 @@ fun OfflineApp(startImmediately: Boolean = false) {
         cfg = c; store.save(c)
         val service = Intent(ctx, UnlockOverlayService::class.java)
         if (c.unlockPopup && c.popupOverlay && Settings.canDrawOverlays(ctx)) {
-            runCatching { androidx.core.content.ContextCompat.startForegroundService(ctx, service) }
+            Scheduler.startOverlayIfDue(ctx, c)
         } else ctx.stopService(service)
     }
     LaunchedEffect(cfg.unlockPopup, cfg.popupOverlay) {
-        if (cfg.unlockPopup && cfg.popupOverlay && Settings.canDrawOverlays(ctx))
-            runCatching { androidx.core.content.ContextCompat.startForegroundService(ctx, Intent(ctx, UnlockOverlayService::class.java)) }
+        Scheduler.startOverlayIfDue(ctx, cfg)
     }
     val colors = darkColorScheme(primary = androidx.compose.ui.graphics.Color(0xFFB2D6FF), surface = androidx.compose.ui.graphics.Color(0xFF111B2A), background = androidx.compose.ui.graphics.Color(0xFF0B1320))
     MaterialTheme(colorScheme = colors) {
@@ -198,6 +200,29 @@ fun OfflineApp(startImmediately: Boolean = false) {
                             if (priorities.isNotBlank()) SettingCard("Priorités notées hier") { Text(priorities) }
                         }
                         item { NotesPanel(tomorrow, journal, onTomorrow={updateNote("tomorrow", it)}, onJournal={updateNote("journal", it)}, initiallyExpanded=false) }
+                        if (cfg.morningRoutine && LocalTime.now().isBefore(LocalTime.NOON) &&
+                            (cfg.morningStep1.isNotBlank() || cfg.morningStep2.isNotBlank())) item {
+                            val day = LocalDate.now().toString()
+                            SettingCard("Au lever · aujourd'hui") {
+                                listOf(cfg.morningStep1, cfg.morningStep2).forEachIndexed { index, instruction ->
+                                    if (instruction.isNotBlank()) {
+                                        val key = "morning_done_${day}_$index"
+                                        var checked by remember(day, index) { mutableStateOf(store.getBoolean(key)) }
+                                        Row(verticalAlignment=Alignment.Top) {
+                                            Checkbox(checked=checked,onCheckedChange={ checked=it;store.setBoolean(key,it) })
+                                            Column(modifier=Modifier.weight(1f).padding(top=9.dp)) {
+                                                Text(instruction,style=MaterialTheme.typography.bodyLarge)
+                                                val detail = if (index == 0) cfg.morningDetail1 else cfg.morningDetail2
+                                                if (detail.isNotBlank()) {
+                                                    Text(detail,style=MaterialTheme.typography.bodySmall,
+                                                        color=MaterialTheme.colorScheme.onSurfaceVariant)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         item { Heading("Routine prévue", "${cfg.tasks.filter{it.enabled}.sumOf{it.minutes}} minutes d'activités") }
                         items(cfg.tasks.filter{it.enabled}) { t -> ListItem(headlineContent={Text(t.name)}, supportingContent={Text("${t.minutes} min${if(t.optional) " · facultatif" else ""}")}, leadingContent={Icon(Icons.Default.CheckCircleOutline,null)}) }
                         item { Text("Les réglages système protégés (niveaux de gris, mode avion) restent manuels sur Android standard.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -350,15 +375,15 @@ fun OfflineApp(startImmediately: Boolean = false) {
                         } }
                         item { SettingCard("Rappels du soir") {
                             Text("Intensité des rappels",fontWeight=FontWeight.SemiBold)
-                            listOf("normal" to "Normal · une notification", "persistent" to "Insistant · relances", "strict" to "Renforcé · relances et alerte visuelle").forEach { (value,label) ->
+                            listOf("normal" to "Normal · une notification", "persistent" to "Insistant · relances", "strict" to "Renforcé · toutes les 5 min, vibration appuyée et pop-up").forEach { (value,label) ->
                                 Row(Modifier.fillMaxWidth().clickable{save(cfg.copy(reminderLevel=value))},verticalAlignment=Alignment.CenterVertically) {
                                     RadioButton(selected=cfg.reminderLevel==value,onClick={save(cfg.copy(reminderLevel=value))})
                                     Text(label,style=MaterialTheme.typography.bodyMedium)
                                 }
                             }
                             if(cfg.reminderLevel != "normal") {
-                                Text("Relance toutes les ${cfg.repeatMinutes} minutes")
-                                listOf(5,10,15).forEach { mins ->
+                                Text(if (cfg.reminderLevel == "strict") "Relance toutes les 5 minutes (mode renforcé)" else "Relance toutes les ${cfg.repeatMinutes} minutes")
+                                if (cfg.reminderLevel != "strict") listOf(5,10,15).forEach { mins ->
                                     Row(verticalAlignment=Alignment.CenterVertically) {
                                         RadioButton(selected=cfg.repeatMinutes==mins,onClick={save(cfg.copy(repeatMinutes=mins))})
                                         Text("$mins minutes",modifier=Modifier.clickable{save(cfg.copy(repeatMinutes=mins))})
@@ -378,9 +403,28 @@ fun OfflineApp(startImmediately: Boolean = false) {
                                         Toast.makeText(ctx,"Autorise la superposition puis reviens activer l'option.",Toast.LENGTH_LONG).show()
                                     } else save(cfg.copy(popupOverlay=v))
                                 }
-                                Text("Une autorisation Android est nécessaire. OFFLINE utilise une notification de service visible pour écouter les déverrouillages ; le système peut limiter ce fonctionnement.",style=MaterialTheme.typography.bodySmall)
+                                Text("Une autorisation Android est nécessaire. La notification de service n’apparaît que pendant la plage du soir, jusqu’à 4 h maximum. Android peut retarder son démarrage automatique.",style=MaterialTheme.typography.bodySmall)
                             }
-                            Text("Après « Je coupe » ou « Ignorer ce soir », les rappels cessent. Le mode renforcé utilise le pop-up seulement si tu l'as autorisé.",style=MaterialTheme.typography.bodySmall)
+                            Text("Après « Je coupe » ou « Ignorer ce soir », les rappels cessent. En mode renforcé, le pop-up nécessite toujours ton autorisation ; les sons et vibrations dépendent des réglages Android.",style=MaterialTheme.typography.bodySmall)
+                        } }
+                        item { SettingCard("Petite routine du lever") {
+                            SwitchSetting("Activer la routine du matin", cfg.morningRoutine) { save(cfg.copy(morningRoutine=it)) }
+                            if (cfg.morningRoutine) {
+                                var morning1 by remember(cfg.morningStep1) { mutableStateOf(cfg.morningStep1) }
+                                var morning2 by remember(cfg.morningStep2) { mutableStateOf(cfg.morningStep2) }
+                                var detail1 by remember(cfg.morningDetail1) { mutableStateOf(cfg.morningDetail1) }
+                                var detail2 by remember(cfg.morningDetail2) { mutableStateOf(cfg.morningDetail2) }
+                                OutlinedTextField(value=morning1,onValueChange={morning1=it},label={Text("Première chose à faire au lever")},modifier=Modifier.fillMaxWidth())
+                                OutlinedTextField(value=detail1,onValueChange={detail1=it},label={Text("Détails (facultatifs)")},
+                                    placeholder={Text("Ex. 10 squats, 10 pompes, 5 min d'étirements")},
+                                    minLines=2,maxLines=5,modifier=Modifier.fillMaxWidth())
+                                OutlinedTextField(value=morning2,onValueChange={morning2=it},label={Text("Deuxième chose (facultative)")},modifier=Modifier.fillMaxWidth())
+                                OutlinedTextField(value=detail2,onValueChange={detail2=it},label={Text("Détails (facultatifs)")},
+                                    minLines=2,maxLines=5,modifier=Modifier.fillMaxWidth())
+                                TextButton(onClick={save(cfg.copy(morningStep1=morning1.trim(),morningStep2=morning2.trim(),
+                                    morningDetail1=detail1.trim(),morningDetail2=detail2.trim()))}) { Text("Enregistrer la routine du lever") }
+                                Text("Le matin, chaque consigne apparaît avec sa légende sous le titre et sa case à cocher. Les détails restent facultatifs.",style=MaterialTheme.typography.bodySmall)
+                            }
                         } }
                         item { SettingCard("Notifications et données") {
                             SwitchSetting("Rappel des priorités du lendemain",cfg.morning){save(cfg.copy(morning=it))}
